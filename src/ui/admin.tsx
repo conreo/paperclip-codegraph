@@ -32,7 +32,7 @@ import {
   type StepOutcome,
 } from "../activation.js";
 import { sanitizeErrorMessage } from "../errors.js";
-import { readOperatorConfig, mergeOperatorConfig, type OperatorConfig } from "../config.js";
+import { readOperatorConfig, operatorConfigForSave, type OperatorConfig } from "../config.js";
 import { StatusLine, styles } from "./chrome.js";
 import { useRefreshSignal } from "./refresh.js";
 import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
@@ -467,15 +467,24 @@ function Configuration({
     setBusy(true);
     onMessage(null);
     try {
-      const configJson = mergeOperatorConfig(stored, draft);
+      // Only the schema's own keys are sent: the server validates this payload
+      // with a closed schema, so an extra key is a rejected request, not a
+      // preserved setting.
+      const { config: configJson, droppedKeys } = operatorConfigForSave(stored, draft);
       await coreApi(`/api/plugins/${PLUGIN_ID}/config`, {
         method: "POST",
         body: { companyId, configJson },
       });
-      // Re-seed from what was written, so a later save merges against the truth
-      // rather than against a stale read.
+      // Re-seed from what was written, so a later save reads the truth rather
+      // than a stale copy of it.
       setStored(configJson);
-      onMessage({ kind: "ok", text: "Configuration saved." });
+      onMessage({
+        kind: "ok",
+        text:
+          droppedKeys.length > 0
+            ? `Configuration saved. This plugin no longer uses ${droppedKeys.join(", ")}, which ${droppedKeys.length === 1 ? "was" : "were"} removed — they are not part of its settings any more.`
+            : "Configuration saved.",
+      });
     } catch (error) {
       onMessage({ kind: "error", text: sanitizeErrorMessage(error) });
     } finally {

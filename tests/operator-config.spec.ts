@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  INSTANCE_CONFIG_SCHEMA,
   OPERATOR_CONFIG_DEFAULTS,
-  mergeOperatorConfig,
+  operatorConfigForSave,
   readOperatorConfig,
+  settableConfigKeys,
 } from "../src/config.js";
 
 describe("readOperatorConfig", () => {
@@ -73,59 +75,110 @@ describe("readOperatorConfig", () => {
   });
 });
 
-describe("mergeOperatorConfig", () => {
-  it("preserves keys the form does not show", () => {
-    // 0.6.0 wrote seventeen keys; this page shows five. A Settings save must not
-    // delete the other twelve — the same bug class that made mergeGovernance
-    // necessary.
-    const stored = { enabled: false, useDaemon: true, startupTimeoutMs: 30_000 };
-    const merged = mergeOperatorConfig(stored, { enabled: true });
-    expect(merged).toEqual({ enabled: true, useDaemon: true, startupTimeoutMs: 30_000 });
+describe("settableConfigKeys", () => {
+  it("is exactly the schema's properties", () => {
+    const fromSchema = Object.keys(
+      (INSTANCE_CONFIG_SCHEMA as { properties: Record<string, unknown> }).properties,
+    );
+    expect(settableConfigKeys()).toEqual(fromSchema);
+    expect(settableConfigKeys().length).toBeGreaterThan(0);
+  });
+});
+
+describe("operatorConfigForSave", () => {
+  it("sends only the schema's keys, so the server's closed schema accepts it", () => {
+    // This is the bug that made saving fail: the payload is validated by Ajv with
+    // `additionalProperties: false`, so a stray key is a rejected request rather
+    // than a preserved setting.
+    const stored = { enabled: true, useDaemon: true, extraEnv: {}, codegraphArgs: ["serve"] };
+    const { config } = operatorConfigForSave(stored, { enabled: false });
+    for (const key of Object.keys(config)) {
+      expect(settableConfigKeys(), `"${key}" is not in the schema`).toContain(key);
+    }
+    expect(config).toEqual({ enabled: false });
+  });
+
+  it("reports the keys it left out instead of dropping them silently", () => {
+    // One of them has a real effect, so the operator should be told.
+    const stored = { enabled: true, useDaemon: true, startupTimeoutMs: 30_000 };
+    const { droppedKeys } = operatorConfigForSave(stored, { enabled: true });
+    expect(droppedKeys.sort()).toEqual(["startupTimeoutMs", "useDaemon"]);
+  });
+
+  it("does not mention keys it keeps", () => {
+    const stored = { enabled: true, autoIndex: false };
+    expect(operatorConfigForSave(stored, {}).droppedKeys).toEqual([]);
+  });
+
+  it("applies false and empty values, which are real edits", () => {
+    const stored = { enabled: true, autoInstall: true, allowedProjectRoots: ["/srv/repos"] };
+    const { config } = operatorConfigForSave(stored, { enabled: false, allowedProjectRoots: [] });
+    expect(config).toEqual({ enabled: false, autoInstall: true, allowedProjectRoots: [] });
   });
 
   it("leaves an untouched field alone", () => {
     const stored = { enabled: true, autoIndex: true, codegraphCommand: "/opt/cg" };
-    const merged = mergeOperatorConfig(stored, { autoIndex: undefined });
-    expect(merged).toEqual(stored);
+    expect(operatorConfigForSave(stored, { autoIndex: undefined }).config).toEqual(stored);
   });
 
-  it("applies false and empty values, which are real edits", () => {
-    // `false` and `[]` are values, not absences: turning something off must
-    // actually turn it off.
-    const merged = mergeOperatorConfig(
-      { enabled: true, autoInstall: true, allowedProjectRoots: ["/srv/repos"] },
-      { enabled: false, allowedProjectRoots: [] },
-    );
-    expect(merged).toEqual({ enabled: false, autoInstall: true, allowedProjectRoots: [] });
+  it("refuses a key smuggled in through the edits", () => {
+    // The form is trusted, but the rule is enforced here rather than assumed.
+    const edits = { enabled: true, useDaemon: true } as Partial<
+      Record<string, unknown>
+    >;
+    const { config } = operatorConfigForSave({}, edits);
+    expect(config).toEqual({ enabled: true });
   });
 
   it("treats a missing or invalid document as empty", () => {
-    expect(mergeOperatorConfig(null, { enabled: true })).toEqual({ enabled: true });
-    expect(mergeOperatorConfig("nonsense", { enabled: true })).toEqual({ enabled: true });
-    expect(mergeOperatorConfig([1, 2], { enabled: true })).toEqual({ enabled: true });
+    expect(operatorConfigForSave(null, { enabled: true }).config).toEqual({ enabled: true });
+    expect(operatorConfigForSave("nonsense", { enabled: true }).config).toEqual({ enabled: true });
+    expect(operatorConfigForSave([1, 2], { enabled: true }).config).toEqual({ enabled: true });
   });
 
   it("does not mutate the stored document", () => {
     const stored = { enabled: false, useDaemon: true };
-    mergeOperatorConfig(stored, { enabled: true });
+    operatorConfigForSave(stored, { enabled: true });
     expect(stored).toEqual({ enabled: false, useDaemon: true });
   });
 
-  it("round-trips through read merge and read", () => {
+  it("round-trips: what it saves is what it reads back", () => {
     const stored = { enabled: false, autoIndex: true, useDaemon: true };
     const edited = readOperatorConfig(stored);
-    const saved = mergeOperatorConfig(stored, { ...edited, enabled: true });
-    // All five settable fields are written, because the schema is closed and the
-    // server validates against it: a partial document is not a valid one.
-    expect(saved).toEqual({
+    const { config } = operatorConfigForSave(stored, { ...edited, enabled: true });
+    expect(readOperatorConfig(config).enabled).toBe(true);
+    expect(readOperatorConfig(config).autoIndex).toBe(true);
+    // And the result is stable — saving it again drops nothing further.
+    expect(operatorConfigForSave(config, {}).droppedKeys).toEqual([]);
+  });
+
+  it("keeps a real organisation's legacy document saveable", () => {
+    // Reproduces the reported failure: a 0.6.0-shaped document plus a form save.
+    const legacy = {
       enabled: true,
-      autoInstall: false,
+      extraEnv: {},
       autoIndex: true,
-      allowedProjectRoots: [],
-      codegraphCommand: "codegraph",
-      // ...and the key this page does not show survives.
       useDaemon: true,
+      autoInstall: true,
+      callTimeoutMs: 60000,
+      codegraphArgs: ["serve", "--mcp"],
+      allowTelemetry: false,
+      indexTimeoutMs: 900000,
+      maxResultChars: 400000,
+      codegraphCommand: "codegraph",
+      codegraphVersion: "1.6.0",
+      startupTimeoutMs: 30000,
+      auditProjectPaths: false,
+      allowedProjectRoots: [],
+      bindDefaultProjectForUnconfiguredCompanies: false,
+    };
+    const { config, droppedKeys } = operatorConfigForSave(legacy, {
+      ...readOperatorConfig(legacy),
+      enabled: true,
     });
-    expect(readOperatorConfig(saved).enabled).toBe(true);
+
+    expect(Object.keys(config).sort()).toEqual(settableConfigKeys().sort());
+    expect(droppedKeys).toContain("useDaemon");
+    expect(droppedKeys).not.toContain("enabled");
   });
 });

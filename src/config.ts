@@ -397,35 +397,66 @@ export function readOperatorConfig(raw: unknown): OperatorConfig {
   };
 }
 
+/** The property names `INSTANCE_CONFIG_SCHEMA` actually allows. */
+export function settableConfigKeys(): string[] {
+  const properties = (INSTANCE_CONFIG_SCHEMA as { properties?: Record<string, unknown> }).properties;
+  return properties ? Object.keys(properties) : [];
+}
+
+export interface SavePayload {
+  /** What to send: exactly the schema's properties, nothing else. */
+  config: Record<string, unknown>;
+  /** Stored keys this payload leaves out, for the operator to see. */
+  droppedKeys: string[];
+}
+
 /**
- * Merge an edited config into the stored document.
+ * Build the configuration to save.
  *
- * A merge rather than a replace, for the reason `governance/merge.ts` exists:
- * the API replaces the whole `configJson`, so writing only the five fields this
- * page shows would delete anything else the document holds. `instanceConfigSchema`
- * is closed so a well-formed document has nothing else — but a document written
- * by an older version of this plugin does (0.6.0's seventeen keys), and silently
- * dropping those on a Settings save is exactly the class of bug that made
- * `mergeGovernance` necessary.
+ * ## Why this does not merge the stored document wholesale
  *
- * `undefined` means "leave as stored", `null`/`[]`/`""` mean what they say, so the
- * form can distinguish an untouched field from a deliberately cleared one.
+ * The first version merged the stored document with the form and posted the
+ * result, on the reasoning that a key the form does not show must not be dropped.
+ * That is the right instinct for a governance document and the **wrong** one
+ * here, because the server validates this payload with Ajv against
+ * `instanceConfigSchema`, which is closed (`additionalProperties: false`):
+ *
+ *     Configuration does not match the plugin's instanceConfigSchema
+ *
+ * So every extra key is not preserved, it is a rejected request. An organisation
+ * still carrying 0.6.0's seventeen-key document could not save settings at all —
+ * the form appeared to fail for no visible reason. (Deterministic, too: it broke
+ * on the orgs with a history and worked on the orgs without one.)
+ *
+ * The document an operator can edit is exactly the schema, so that is what this
+ * returns. Keys outside the schema are reported in `droppedKeys` rather than
+ * silently discarded, because one of them (`useDaemon`) has a real effect: it is
+ * read by `normalizeConfig` and defaults to off, and the plugin warns that leaving
+ * it on stops CodeGraph enforcing its own tool allowlist. Dropping it is the
+ * behaviour the schema documents, and saying so is better than pretending it was
+ * never there.
  */
-export function mergeOperatorConfig(
+export function operatorConfigForSave(
   stored: unknown,
   edits: Partial<OperatorConfig>,
-): Record<string, unknown> {
-  // Arrays are objects, and spreading one yields `{0: …, 1: …}` rather than a
-  // document. An array is therefore treated as empty, matching
-  // `readOperatorConfig`.
-  const base =
+): SavePayload {
+  const record =
     typeof stored === "object" && stored !== null && !Array.isArray(stored)
-      ? { ...(stored as Record<string, unknown>) }
+      ? (stored as Record<string, unknown>)
       : {};
 
-  for (const [key, value] of Object.entries(edits)) {
-    if (value === undefined) continue;
-    base[key] = value;
+  const allowed = settableConfigKeys();
+  const config: Record<string, unknown> = {};
+  for (const key of allowed) {
+    if (key in record) config[key] = record[key];
   }
-  return base;
+
+  for (const [key, value] of Object.entries(edits)) {
+    // Only schema keys, so a caller cannot smuggle one in through `edits`.
+    if (value === undefined || !allowed.includes(key)) continue;
+    config[key] = value;
+  }
+
+  const droppedKeys = Object.keys(record).filter((key) => !allowed.includes(key));
+  return { config, droppedKeys };
 }
