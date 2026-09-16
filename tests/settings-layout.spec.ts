@@ -95,3 +95,47 @@ describe("the copy says what happens", () => {
     expect(ADMIN).toContain("A limit, not a list");
   });
 });
+
+/**
+ * The switch geometry, transcribed from the host's markup.
+ *
+ * The classes to match, quoted from a real Paperclip settings page:
+ *
+ *   track: `relative inline-flex shrink-0 items-center rounded-full border-2
+ *           transition-all h-5 w-11 border-transparent bg-input/90`
+ *   thumb: `pointer-events-none inline-block rounded-full bg-background shadow-sm
+ *           transition-transform h-4 w-6 translate-x-0`
+ *
+ * These are asserted as numbers because that is what they are, and because the two
+ * easy mistakes here — a square thumb and a hardcoded travel distance — are
+ * invisible in a diff and obvious on screen next to the host's own rows.
+ */
+describe("the switch matches the host's geometry", () => {
+  it("uses the host's track and thumb sizes", () => {
+    // `w-11 h-5` = 44×20; `w-6 h-4` = 24×16. The thumb is wider than it is tall.
+    expect(CHROME).toContain("const TRACK_WIDTH = 44");
+    expect(CHROME).toContain("const TRACK_HEIGHT = 20");
+    expect(CHROME).toContain("const THUMB_WIDTH = 24");
+    expect(CHROME).toContain("const THUMB_HEIGHT = 16");
+  });
+
+  it("gives the track the host's 2px border", () => {
+    // `border-2`, transparent when off — so the border counts toward the height and
+    // the inner box is exactly the thumb's height.
+    expect(CHROME).toContain("const TRACK_BORDER = 2");
+    expect(CHROME).toMatch(/border: `\$\{TRACK_BORDER\}px solid transparent`/);
+  });
+
+  it("derives the thumb travel rather than hardcoding it", () => {
+    // 44 − 4 − 24 = 16. A literal 16 would desync the moment a size changed.
+    expect(CHROME).toContain("const THUMB_TRAVEL = TRACK_WIDTH - TRACK_BORDER * 2 - THUMB_WIDTH");
+    expect(ADMIN).not.toContain('translateX(16px)');
+  });
+
+  it("reproduces the host's arithmetic", () => {
+    const track = 44;
+    const border = 2;
+    const thumb = 24;
+    expect(track - border * 2 - thumb).toBe(16);
+  });
+});

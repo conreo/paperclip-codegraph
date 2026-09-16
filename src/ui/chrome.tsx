@@ -23,6 +23,22 @@
 
 import type { CSSProperties } from "react";
 
+/**
+ * The switch's geometry, named and derived rather than sprinkled as literals.
+ *
+ * From the host's `ToggleSwitch`: `h-5 w-11` track (20×44), `border-2`, and a
+ * `h-4 w-6` thumb (16×24). The border counts toward the height, so the track's
+ * inner box is 40×16 — exactly the thumb's height, which is what makes it sit
+ * flush. The thumb's travel is what is left over horizontally.
+ */
+const TRACK_WIDTH = 44;
+const TRACK_HEIGHT = 20;
+const TRACK_BORDER = 2;
+const THUMB_WIDTH = 24;
+const THUMB_HEIGHT = 16;
+/** 44 − 2×2 − 24 = 16. Written as arithmetic so a size change cannot desync it. */
+const THUMB_TRAVEL = TRACK_WIDTH - TRACK_BORDER * 2 - THUMB_WIDTH;
+
 /** The host's design tokens, with fallbacks so a renamed one is still legible. */
 export const ui = {
   background: "var(--background, #ffffff)",
@@ -59,6 +75,10 @@ export function StatusLine({ ok, good, bad }: { ok: boolean; good: string; bad: 
     </li>
   );
 }
+
+/** The transform that moves the thumb to the on position. */
+export const thumbTransform = (checked: boolean): string =>
+  checked ? `translateX(${THUMB_TRAVEL}px)` : "translateX(0)";
 
 export const styles: Record<string, CSSProperties> = {
   // -- Page ---------------------------------------------------------------
@@ -122,34 +142,50 @@ export const styles: Record<string, CSSProperties> = {
 
   // -- Controls -----------------------------------------------------------
   /**
-   * The switch, matching the host's `ToggleSwitch`: a `h-5 w-11` capsule with a
-   * `border-2` track and an oval thumb. When on it uses the status green rather
-   * than `primary` — copied deliberately, since that component records the choice
-   * as a ruling not to be swapped back.
+   * The switch, transcribed from the host's `ToggleSwitch` markup:
+   *
+   *   track: `h-5 w-11 rounded-full border-2` — on: `border-(--status-task-done)
+   *          bg-(--status-task-done)`; off: `border-transparent bg-input/90`
+   *   thumb: `h-4 w-6 rounded-full bg-background shadow-sm`, `translate-x-4` when on
+   *
+   * Two details are easy to get wrong and were: the **thumb is wider than it is
+   * tall** (`w-6 h-4`, not a square), and the track carries a **2px border that is
+   * transparent when off** — so the border contributes to the 20px height and the
+   * capsule's inner height is 16px, which is exactly the thumb. A square thumb
+   * looks subtly wrong beside the host's rows, which is the whole point of matching.
+   *
+   * The status green rather than `primary` is copied deliberately: that component
+   * records the choice as a ruling not to be swapped back.
    */
   switch: {
     position: "relative",
     display: "inline-flex",
     alignItems: "center",
     flex: "0 0 auto",
-    width: 44,
-    height: 20,
+    boxSizing: "border-box",
+    width: TRACK_WIDTH,
+    height: TRACK_HEIGHT,
     padding: 0,
     borderRadius: 999,
-    border: "2px solid transparent",
+    border: `${TRACK_BORDER}px solid transparent`,
     cursor: "pointer",
     transition: "background-color 150ms ease, border-color 150ms ease",
   },
   switchOn: { background: ui.statusDone, borderColor: ui.statusDone },
-  switchOff: { background: ui.input },
+  /** `bg-input/90`: the host runs the input token at 90% opacity when off. */
+  switchOff: {
+    background: `color-mix(in srgb, ${ui.input} 90%, transparent)`,
+    borderColor: "transparent",
+  },
   switchDisabled: { opacity: 0.5, cursor: "not-allowed" },
   thumb: {
     display: "inline-block",
-    width: 16,
-    height: 16,
+    boxSizing: "border-box",
+    width: THUMB_WIDTH,
+    height: THUMB_HEIGHT,
     borderRadius: 999,
     background: ui.background,
-    boxShadow: "0 1px 2px rgba(0,0,0,0.15)",
+    boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
     transition: "transform 150ms ease",
     pointerEvents: "none",
   },

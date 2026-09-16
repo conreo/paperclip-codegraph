@@ -41,7 +41,7 @@ import {
 } from "../activation.js";
 import { sanitizeErrorMessage } from "../errors.js";
 import { operatorConfigForSave, readOperatorConfig, type OperatorConfig } from "../config.js";
-import { StatusLine, styles } from "./chrome.js";
+import { StatusLine, styles, thumbTransform } from "./chrome.js";
 import { useRefreshSignal } from "./refresh.js";
 import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
 
@@ -260,6 +260,9 @@ function Switch({
       type="button"
       role="switch"
       aria-checked={checked}
+      // The host's own hook (`data-slot="toggle"`), so anything that styles or
+      // targets its switches by that attribute finds this one too.
+      data-slot="toggle"
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
@@ -269,9 +272,7 @@ function Switch({
         ...(disabled ? styles.switchDisabled : null),
       }}
     >
-      <span
-        style={{ ...styles.thumb, transform: checked ? "translateX(16px)" : "translateX(0)" }}
-      />
+      <span style={{ ...styles.thumb, transform: thumbTransform(checked) }} />
     </button>
   );
 }
