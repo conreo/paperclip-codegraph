@@ -548,6 +548,40 @@ curl -fsS -X POST "$PAPERCLIP_API_URL/api/plugins/$PLUGIN_ID/bridge/data" \
   -d '{"key":"verify-scope","companyId":"'$COMPANY_ID'","params":{"query":"auth flow"}}'
 ```
 
+### A repository that shows as "not indexed"
+
+Ask why, rather than guessing. A repository that is plainly indexed showing as *not
+indexed* is not debuggable from the UI — the plugin never discloses host paths, so
+a stale render and a wrong resolution look identical. `graph-diagnose` reports the
+chain the plugin actually followed:
+
+```bash
+curl -fsS -X POST "$PAPERCLIP_API_URL/api/plugins/$PLUGIN_ID/bridge/data" \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"graph-diagnose","companyId":"'$COMPANY_ID'","params":{"companyId":"'$COMPANY_ID'","projectId":"'$PROJECT_ID'"}}'
+```
+
+```jsonc
+{
+  "workspaceAccepted": true,      // false ⇒ the host gave no path, or containment refused it
+  "workspaceAlias": "pos",        // last path segment only — never a host layout
+  "repoUrl": "https://gitea/root/pos",
+  "gitRootAlias": "pos",
+  "gitRootIsWorkspace": true,     // false ⇒ the project is a subdirectory of a checkout
+  "repositoryName": "pos",        // from `git remote get-url origin`
+  "indexed": true,                // the answer to the question you asked
+  "indexPathAlias": "pos/.codegraph",
+  "hasGitEntry": true,
+  "gitAvailable": true,           // false ⇒ identity fell back to the workspace path
+  "containmentRootCount": 0       // 0 ⇒ `allowedProjectRoots` is empty, so nothing is refused
+}
+```
+
+That is enough to separate the three causes: the host resolved no workspace
+(`workspaceAccepted: false`), git resolved a root that is not where the index is
+(`gitRootIsWorkspace: false`), or the index genuinely is not there (`indexed: false`
+with `indexPathAlias` naming where it looked).
+
 A passing result reports `ok: true`, the resolved `projectKey`, the upstream tool
 count, and `filesServed` — the project-relative files CodeGraph actually returned,
 which is the evidence that the *right* repository answered.
