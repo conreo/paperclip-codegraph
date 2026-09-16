@@ -1,0 +1,44 @@
+
+Paperclip CodeGraph isolation E2E against http://127.0.0.1:3100
+  plugin   41a13119-0199-4b7f-9d3f-fa9535a5c4e5
+  companyA 00ee2512-1d74-46cb-a221-88c812e2c588  -> /home/rimko/projects/paperclip-codegraph/paperclip-e2e-fixtures/tenant-a/payments-service
+  companyB f49a49b5-9199-4942-a904-a74fa2768104  -> /home/rimko/projects/paperclip-codegraph/paperclip-e2e-fixtures/tenant-b/inventory-service
+
+1. Disabled-by-default posture
+  [PASS] company A denied while disabled — reason=plugin_disabled
+  [PASS] company B denied while disabled — reason=plugin_disabled
+
+2. Bind distinct repositories per company
+  [PASS] company A resolves to its own binding — projectKey=payments
+  [PASS] company B resolves to its own binding — projectKey=inventory
+  [PASS] company A cannot resolve company B's binding — A=payments B=inventory
+
+3. Forged cross-tenant identifiers
+  [PASS] company A ignores a forged project/agent id — projectKey=payments
+
+4. Deny wins; narrower scopes only narrow
+  [PASS] company deny removes codegraph_impact for a normal agent — effective=7 denied=["codegraph_impact"]
+  [PASS] agent allow list narrows to exactly two tools — effectiveTools=["codegraph_explore","codegraph_search"]
+  [PASS] agent override cannot re-grant a company-denied tool — codegraph_impact absent
+  [PASS] a normal agent sees more tools than the restricted agent — 7 > 2
+
+5. Real CodeGraph MCP calls through the real host
+  [PASS] company A call succeeded against its repo — projectKey=payments chars=1657 ms=338
+  [PASS] company B call succeeded against its repo — projectKey=inventory chars=1452 ms=325
+  [PASS] company A is served its own file (ledger.ts) — files=["index.ts","src/index.ts","src/ledger.ts"]
+  [PASS] company B is served its own file (warehouse.ts) — files=["src/index.ts","src/warehouse.ts"]
+  [PASS] company A's answer contains none of company B's code — no tenant-B identifiers in tenant-A output
+  [PASS] company B's answer contains none of company A's code — no tenant-A identifiers in tenant-B output
+  [PASS] the upstream allowlist reaches CodeGraph itself — upstream tools listed=3
+  [PASS] company A's effective tool set excludes the company-denied tool — effective=7 allowed=8
+  [PASS] company B has no company-level denial, so all eight are effective — effective=8
+
+6. Governance state is per company
+  [PASS] company A's governance read contains only company A — keys=1
+  [PASS] company B's governance read contains only company B — keys=1
+  [PASS] each company sees its own project alias and not the other's — A=["payments"] B=["inventory"]
+  [PASS] no absolute repository path is disclosed by either read — no host paths in summary
+
+7. Audit trail skipped (no PAPERCLIP_BOARD_API_KEY supplied)
+
+ALL CHECKS PASSED (23/23)

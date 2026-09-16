@@ -25,3 +25,4 @@ paperclip-e2e-fixtures/
 *.swp
 .vscode/
 .idea/
+.plugin-id
