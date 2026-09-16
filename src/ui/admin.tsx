@@ -17,6 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   usePluginAction,
   usePluginData,
+  usePluginToast,
   type PluginSettingsPageProps,
 } from "@paperclipai/plugin-sdk/ui";
 
@@ -67,6 +68,10 @@ interface AgentRow {
   name: string;
   /** Absent means allowed — the default is on, and switches only narrow. */
   enabled?: boolean;
+  /** Whether this agent loads an MCP client at all. */
+  mcpClientLoaded?: boolean;
+  /** Whether that client is pointed at the company MCP config. */
+  mcpConfigPassed?: boolean;
 }
 
 interface RepoRow {
@@ -166,7 +171,7 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
   const unavailableCount = repositories.filter((repo) => repo.blocked === true).length;
 
   const [busy, setBusy] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const toast = usePluginToast();
 
   /**
    * Create the Paperclip objects that make the tools callable.
@@ -180,7 +185,6 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
   const activate = useCallback(async () => {
     if (!companyId) return;
     setBusy("activate");
-    setMessage(null);
 
     const profilesPath = `/api/companies/${companyId}/tools/profiles`;
     const profileBody = {
@@ -275,15 +279,12 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
       }
 
       const summary: ActivationSummary = { profileId, profile: profileOutcome, binding, gateway };
-      setMessage({ kind: "ok", text: describeActivation(summary) });
+      toast({ title: "CodeGraph activated", body: describeActivation(summary), tone: "success" });
     } catch (error) {
-      setMessage({
-        kind: "error",
-        // Sanitised at the display boundary only: the classification above needs
-        // the raw text, but a board member must never be shown raw SQL and its
-        // bound parameters.
-        text: sanitizeErrorMessage(error),
-      });
+      // Sanitised at the display boundary only: the classification above needs
+      // the raw text, but a board member must never be shown raw SQL and its
+      // bound parameters.
+      toast({ title: "Could not activate CodeGraph", body: sanitizeErrorMessage(error), tone: "error" });
     } finally {
       setBusy(null);
     }
@@ -377,29 +378,11 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
         </div>
       </section>
 
-      <Configuration companyId={companyId} onMessage={setMessage} />
-      <RepositoryAccess
-        companyId={companyId}
-        onMessage={setMessage}
-        revision={revision}
-        onChanged={refresh}
-      />
-      <Indexing
-        companyId={companyId}
-        onMessage={setMessage}
-        revision={revision}
-        onChanged={refresh}
-      />
-      <AgentExceptions
-        companyId={companyId}
-        onMessage={setMessage}
-        revision={revision}
-        onChanged={refresh}
-      />
+      <Configuration companyId={companyId} />
+      <RepositoryAccess companyId={companyId} revision={revision} onChanged={refresh} />
+      <Indexing companyId={companyId} revision={revision} onChanged={refresh} />
+      <AgentExceptions companyId={companyId} revision={revision} onChanged={refresh} />
 
-      {message ? (
-        <p style={message.kind === "ok" ? styles.good : styles.bad}>{message.text}</p>
-      ) : null}
     </div>
   );
 }
@@ -417,13 +400,8 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
  * The five fields are the closed `instanceConfigSchema`; saving merges into the
  * stored document so nothing outside this form is dropped.
  */
-function Configuration({
-  companyId,
-  onMessage,
-}: {
-  companyId: string;
-  onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
-}) {
+function Configuration({ companyId }: { companyId: string }) {
+  const toast = usePluginToast();
   const path = `/api/plugins/${PLUGIN_ID}/config?companyId=${encodeURIComponent(companyId)}`;
 
   const [stored, setStored] = useState<Record<string, unknown> | null>(null);
@@ -465,7 +443,6 @@ function Configuration({
   const save = useCallback(async () => {
     if (!draft) return;
     setBusy(true);
-    onMessage(null);
     try {
       // Only the schema's own keys are sent: the server validates this payload
       // with a closed schema, so an extra key is a rejected request, not a
@@ -478,19 +455,21 @@ function Configuration({
       // Re-seed from what was written, so a later save reads the truth rather
       // than a stale copy of it.
       setStored(configJson);
-      onMessage({
-        kind: "ok",
-        text:
-          droppedKeys.length > 0
-            ? `Configuration saved. This plugin no longer uses ${droppedKeys.join(", ")}, which ${droppedKeys.length === 1 ? "was" : "were"} removed — they are not part of its settings any more.`
-            : "Configuration saved.",
+      toast({
+        title: "Configuration saved",
+        ...(droppedKeys.length > 0
+          ? {
+              body: `This plugin no longer uses ${droppedKeys.join(", ")}, so ${droppedKeys.length === 1 ? "it was" : "they were"} removed — ${droppedKeys.length === 1 ? "it is" : "they are"} not part of its settings any more.`,
+              tone: "warn" as const,
+            }
+          : { tone: "success" as const }),
       });
     } catch (error) {
-      onMessage({ kind: "error", text: sanitizeErrorMessage(error) });
+      toast({ title: "That did not work", body: sanitizeErrorMessage(error), tone: "error" });
     } finally {
       setBusy(false);
     }
-  }, [companyId, draft, onMessage, stored]);
+  }, [companyId, draft, stored, toast]);
 
   if (loading && !draft) {
     return (
@@ -666,17 +645,16 @@ function boundsSummary(draft: OperatorConfig): string {
  */
 function Indexing({
   companyId,
-  onMessage,
   revision,
   onChanged,
 }: {
   companyId: string;
-  onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
   /** Bumped when the page wants a re-read, e.g. on returning to the tab. */
   revision: number;
   /** Bump to make the whole page re-read after a change. */
   onChanged: () => void;
 }) {
+  const toast = usePluginToast();
   const { data: repos, loading, refresh } = usePluginData<{ repositories: RepoRow[] }>(
     DATA_KEYS.repositories,
     { companyId, revision },
@@ -687,26 +665,24 @@ function Indexing({
   const run = useCallback(
     async (projectId: string, reindex: boolean) => {
       setBusy(`${projectId}:${reindex ? "rebuild" : "index"}`);
-      onMessage(null);
       try {
         await indexNow({ companyId, projectId, reindex });
         // The counts and the index state are wrong the instant this returns, so
         // re-read rather than telling the operator to reopen the page.
         refresh();
         onChanged();
-        onMessage({
-          kind: "ok",
-          text: reindex
-            ? "Rebuild finished. Counts below are updated."
-            : "Indexed. Counts below are updated.",
+        toast({
+          title: reindex ? "Index rebuilt" : "Index built",
+          body: "The counts below are updated.",
+          tone: "success",
         });
       } catch (error) {
-        onMessage({ kind: "error", text: sanitizeErrorMessage(error) });
+        toast({ title: "That did not work", body: sanitizeErrorMessage(error), tone: "error" });
       } finally {
         setBusy(null);
       }
     },
-    [companyId, indexNow, onChanged, onMessage, refresh],
+    [companyId, indexNow, onChanged, refresh, toast],
   );
 
   const repositories = repos?.repositories ?? [];
@@ -773,17 +749,16 @@ function Indexing({
  */
 function RepositoryAccess({
   companyId,
-  onMessage,
   revision,
   onChanged,
 }: {
   companyId: string;
-  onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
   /** Bumped when the page wants a re-read, e.g. on returning to the tab. */
   revision: number;
   /** Bump to make the whole page re-read after a change. */
   onChanged: () => void;
 }) {
+  const toast = usePluginToast();
   const { data, loading, refresh } = usePluginData<{
     organization?: string | null;
     repositories: RepoRow[];
@@ -798,25 +773,25 @@ function RepositoryAccess({
   const toggle = useCallback(
     async (projectId: string, blocked: boolean) => {
       setBusy(projectId);
-      onMessage(null);
       try {
         await setRepositoryAccess({ companyId, projectId, blocked });
         // Re-read here for this section, and tell the page so Status agrees.
         refresh();
         onChanged();
-        onMessage({
-          kind: "ok",
-          text: blocked
-            ? "CodeGraph is now off for that repository. Agents working in it get no CodeGraph tools."
+        toast({
+          title: blocked ? "Repository switched off" : "Repository switched on",
+          body: blocked
+            ? "Agents working in it get no CodeGraph tools."
             : "CodeGraph is available for that repository again.",
+          tone: blocked ? "warn" : "success",
         });
       } catch (error) {
-        onMessage({ kind: "error", text: sanitizeErrorMessage(error) });
+        toast({ title: "That did not work", body: sanitizeErrorMessage(error), tone: "error" });
       } finally {
         setBusy(null);
       }
     },
-    [companyId, onChanged, onMessage, refresh, setRepositoryAccess],
+    [companyId, onChanged, refresh, setRepositoryAccess, toast],
   );
 
   const skipped = data?.skippedProjects ?? 0;
@@ -888,17 +863,16 @@ function RepositoryAccess({
  */
 function AgentExceptions({
   companyId,
-  onMessage,
   revision,
   onChanged,
 }: {
   companyId: string;
-  onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
   /** Bumped when the page wants a re-read, e.g. on returning to the tab. */
   revision: number;
   /** Bump to make the whole page re-read after a change. */
   onChanged: () => void;
 }) {
+  const toast = usePluginToast();
   const [open, setOpen] = useState(false);
   const { data: access, refresh: refreshAccess } = usePluginData<{
     agents: AgentRow[];
@@ -915,24 +889,39 @@ function AgentExceptions({
 
   const revokedCount = rows.filter((agent) => agent.enabled === false).length;
 
+  // Only agents that are actually allowed matter: counting a revoked agent as a
+  // delivery gap would report a problem where the operator made a choice.
+  const allowed = rows.filter((agent) => agent.enabled !== false);
+  const mcpGap = {
+    noClient: allowed.filter((agent) => agent.mcpClientLoaded !== true).length,
+    noConfig: allowed.filter(
+      (agent) => agent.mcpClientLoaded === true && agent.mcpConfigPassed !== true,
+    ).length,
+    get count() {
+      return this.noClient + this.noConfig;
+    },
+  };
+
   const toggle = useCallback(
     async (agentId: string, enabled: boolean) => {
       setBusy(agentId);
-      onMessage(null);
       try {
         await setAgentAccess({ companyId, agentId, enabled });
         refreshAccess();
-        onMessage({
-          kind: "ok",
-          text: enabled ? "Access restored for that agent." : "Access revoked for that agent.",
+        toast({
+          title: enabled ? "Access restored" : "Access revoked",
+          body: enabled
+            ? "That agent reaches the repositories its projects use again."
+            : "That agent no longer gets CodeGraph tools, wherever it works.",
+          tone: enabled ? "success" : "warn",
         });
       } catch (error) {
-        onMessage({ kind: "error", text: sanitizeErrorMessage(error) });
+        toast({ title: "That did not work", body: sanitizeErrorMessage(error), tone: "error" });
       } finally {
         setBusy(null);
       }
     },
-    [companyId, onMessage, refreshAccess, setAgentAccess],
+    [companyId, refreshAccess, setAgentAccess, toast],
   );
 
   return (
@@ -948,6 +937,52 @@ function AgentExceptions({
       <button style={styles.button} onClick={() => setOpen((value) => !value)}>
         {open ? "Hide agents" : `Show ${rows.length} agents`}
       </button>
+
+      {/*
+        The gap that made two separate runs report "CodeGraph is not available"
+        for a plugin whose governance was entirely correct: an active profile
+        delivers nothing on its own. A `pi_local` agent needs an MCP client, and
+        that client needs to be pointed at the company's MCP config — otherwise it
+        reads its own default paths, finds nothing, and loads zero servers.
+      */}
+      {mcpGap.count > 0 ? (
+        <div style={styles.warning}>
+          <strong>
+            {mcpGap.count} of {rows.length} agent{mcpGap.count === 1 ? "" : "s"} cannot
+            receive these tools yet.
+          </strong>
+          <p style={styles.hint}>
+            The profile above is active, but an active profile only makes the tools
+            <em> permitted</em>. An agent also needs an MCP client, and it needs to be
+            pointed at this company&apos;s MCP config.
+            {mcpGap.noClient > 0
+              ? ` ${mcpGap.noClient} load no MCP client at all (no pi-mcp-adapter in their arguments).`
+              : ""}
+            {mcpGap.noConfig > 0
+              ? ` ${mcpGap.noConfig} load one but never pass --mcp-config, so it reads its own default paths and finds nothing.`
+              : ""}
+          </p>
+          <p style={styles.hint}>
+            Fix per agent in its adapter config: <code>-e …/pi-mcp-adapter --mcp-config
+            /paperclip/instances/default/companies/&lt;company&gt;/mcp.json --tools
+            …,mcp</code>, then add CodeGraph to that file as a server. Restart the agent
+            for it to take effect.
+          </p>
+          {mcpGap.noClient > 0 ? (
+            <p style={styles.hint}>
+              Without an MCP client these {mcpGap.noClient} agent
+              {mcpGap.noClient === 1 ? " reaches" : "s reach"} CodeGraph only through
+              the plugin API, which is governed and audited but must be called
+              explicitly rather than appearing as a tool.
+            </p>
+          ) : null}
+        </div>
+      ) : rows.length > 0 ? (
+        <p style={styles.hint}>
+          All {rows.length} agents load an MCP client pointed at this company&apos;s MCP
+          config, so the permitted tools can reach them.
+        </p>
+      ) : null}
 
       {open ? (
         rows.length > 0 ? (

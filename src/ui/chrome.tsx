@@ -94,6 +94,21 @@ export const styles: Record<string, CSSProperties> = {
     margin: "4px 0 0",
     lineHeight: 1.45,
   },
+  /**
+   * A callout for a state the operator has to act on.
+   *
+   * Uses the host's muted surface and its border rather than a hardcoded amber,
+   * so it reads correctly in both themes.
+   */
+  warning: {
+    border: "1px solid var(--border, #e5e7eb)",
+    borderLeft: "3px solid var(--primary, #16150f)",
+    borderRadius: 8,
+    background: "var(--muted, rgba(0,0,0,0.03))",
+    padding: "12px 14px",
+    marginTop: 12,
+    fontSize: 13,
+  },
   /** A quiet aside inside a label, e.g. the repository name beside a project name. */
   hintInline: { color: "var(--muted-foreground, #6b7280)", fontSize: 12 },
   row: { display: "flex", gap: 12, alignItems: "center", marginTop: 12, flexWrap: "wrap" },

@@ -1371,6 +1371,42 @@ const plugin = definePlugin({
      * that project's repository, and Paperclip already decides who works where.
      * Unticking is the only edit this surface offers, so it can only narrow.
      */
+    /**
+     * Whether an agent can actually receive a tool from this plugin.
+     *
+     * This exists because two runs — the CTO's and the CEO's — independently
+     * concluded "CodeGraph is not available" and neither could see why. The
+     * governance was correct: the plugin enabled, the profile active with all
+     * eight tools, bound at company and gateway scope. **None of that delivers
+     * anything.** A `pi_local` agent has no MCP client unless its adapter config
+     * loads one, and on this instance exactly one agent had that.
+     *
+     * So the plugin reports the missing half. It reads only the `extraArgs`
+     * array — never the rest of `adapterConfig`, which holds `secret_ref`
+     * bindings that are none of a UI's business.
+     */
+    const mcpDelivery = (agent: {
+      adapterType?: string | null;
+      adapterConfig?: unknown;
+    }): { mcpClientLoaded: boolean; mcpConfigPassed: boolean } => {
+      const config = agent.adapterConfig;
+      const raw =
+        typeof config === "object" && config !== null
+          ? (config as { extraArgs?: unknown }).extraArgs
+          : undefined;
+      const extraArgs = Array.isArray(raw) ? raw.map(String) : [];
+
+      return {
+        // A `pi_local` agent needs the adapter extension loaded to have an MCP
+        // client at all.
+        mcpClientLoaded: extraArgs.some((arg) => arg.includes("pi-mcp-adapter")),
+        // Without `--mcp-config` the adapter reads its own default paths, which on
+        // a Paperclip host do not exist — so it loads zero servers even when the
+        // company config lists some. That was the whole gap.
+        mcpConfigPassed: extraArgs.includes("--mcp-config"),
+      };
+    };
+
     ctx.data.register(DATA_KEYS.access, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) return { agents: [] };
@@ -1383,6 +1419,7 @@ const plugin = definePlugin({
           name: agent.name,
           // Absent override means allowed — the default is on, not off.
           enabled: overrides[agent.id]?.enabled !== false,
+          ...mcpDelivery(agent),
         })),
         toolCount: CODEGRAPH_TOOLS.length,
       };
