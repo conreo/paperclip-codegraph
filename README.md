@@ -30,6 +30,7 @@ Company B ──┘                          └── repo B  (.codegraph index
 - [Why `projectPath` is not exposed](#why-projectpath-is-not-exposed)
 - [Choosing between the two integration paths](#choosing-between-the-two-integration-paths)
 - [Verifying an install](#verifying-an-install)
+- [Bringing it up on a real instance](./docs/RUNBOOK.md)
 - [Audit](#audit)
 - [Security model](#security-model)
 - [Limitations and assumptions](#limitations-and-assumptions)
@@ -367,6 +368,13 @@ node scripts/provision-native-mcp.mjs --company-id "$COMPANY_ID" --project-path 
 ```
 
 ## Verifying an install
+
+> Bringing this up on a real instance for the first time? Follow
+> **[docs/RUNBOOK.md](./docs/RUNBOOK.md)** — ordered steps, a gate between each,
+> and a failure→cause table. It covers the three things that make this look
+> broken when it is merely half-configured: CodeGraph must be installed *where the
+> worker runs*, enabling is a **second** gate on top of the Paperclip profile, and
+> a **named MCP gateway** is required before any agent receives the tools.
 
 Ask the plugin what a scope may do, without calling CodeGraph:
 
