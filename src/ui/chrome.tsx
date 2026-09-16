@@ -160,3 +160,37 @@ export const styles: Record<string, CSSProperties> = {
   },
   sidebarNotes: { listStyle: "none", padding: "0 8px", margin: 0 },
 };
+
+/**
+ * The CodeGraph page's own palette.
+ *
+ * Taken from the CodeGraph viewer's design tokens — warm paper rather than the
+ * host's neutral surfaces, one ink scale, and a single accent. Reproducing the
+ * tool's own look is the point: an operator who has used `codegraph ui` should
+ * recognise this page immediately.
+ *
+ * A separate namespace from the host's `--background`/`--border` tokens on
+ * purpose. This is a light, paper-coloured surface by design, and reusing the
+ * host's tokens would make it inherit a dark theme where the palette stops
+ * making sense. Settings and the nav entry stay on the host's tokens; only the
+ * reader is CodeGraph-styled.
+ */
+export const reader = {
+  paper: "#f7f6f2",
+  paper2: "#f1efe8",
+  press: "#e8e6dd",
+  press2: "#dedbd0",
+  ink: "#16150f",
+  ink2: "#56544a",
+  ink3: "#87847a",
+  ink4: "#b4b1a5",
+  rule: "#d6d3c8",
+  ruleFaint: "#e6e3d9",
+  accent: "#7a2230",
+  accentSoft: "#f0e3e5",
+  accentLine: "#d9b3b9",
+  amber: "#8a5a0b",
+  amberSoft: "#f3e9d2",
+  sans: 'Archivo, "Helvetica Neue", Arial, system-ui, sans-serif',
+  mono: '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+} as const;

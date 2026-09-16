@@ -3,18 +3,33 @@
  *
  * Extracted from the component because this is the part that can be wrong in a
  * way nobody reports: a nav item showing the wrong state is a small lie that
- * costs an operator a support round-trip. It is also the only logic the sidebar
- * has, so separating it leaves the component as pure layout.
+ * costs an operator a support round-trip.
  *
- * The rule the whole plugin is built on applies here too: **absence means
- * allowed**. `readiness.enabled` is not a boolean flag that defaults to false —
- * an unknown value must not be rendered as "switched off", because that would
- * tell an operator their working deployment is broken.
+ * ## The bug this file was rewritten to fix
+ *
+ * It used to read the `readiness` handler, which reports the governance
+ * **binding** — `resolved.project` out of the governance document. On an
+ * organisation that was never given a binding that is empty, so the nav said
+ * *"No repository in this company yet"* while the workspace was a git repository
+ * with a 640-file index. Bindings are an override mechanism, not a declaration of
+ * what exists; the repositories an organisation actually has come from its
+ * Paperclip projects, which is what this now reads.
+ *
+ * The rule the rest of the plugin runs on still applies: **absence means
+ * allowed**. An unknown state must not render as a problem.
  */
 
-export interface SidebarReadiness {
+/** One repository, as `graph-projects` reports it. */
+export interface SidebarRepository {
+  indexed: boolean;
+  /** True when an operator has switched CodeGraph off for this repository. */
+  blocked?: boolean;
+}
+
+export interface SidebarFacts {
+  /** The plugin's own on/off switch for this organisation. */
   enabled: boolean;
-  repository: { configured: boolean; indexed: boolean };
+  repositories: readonly SidebarRepository[];
 }
 
 export type SidebarState = "ready" | "off" | "unindexed" | "no-repository" | "unknown";
@@ -30,37 +45,48 @@ export interface SidebarStatus {
 }
 
 /**
- * Reduce readiness to what the entry shows.
+ * Reduce the facts to what the entry shows.
  *
- * `null` readiness means the data has not arrived, and that is `unknown` — not
- * "off". Reporting "off" during the first render would flash a false problem on
- * every page load.
+ * `null` means the data has not arrived, and that is `unknown` — not "off" and
+ * not "no repository". Reporting either during the first render would flash a
+ * false problem on every page load.
  */
-export function sidebarStatus(readiness: SidebarReadiness | null | undefined): SidebarStatus {
-  if (!readiness) {
+export function sidebarStatus(facts: SidebarFacts | null | undefined): SidebarStatus {
+  if (!facts) {
     return { state: "unknown", ok: false, note: null, title: "Checking CodeGraph" };
   }
 
-  if (!readiness.enabled) {
+  if (!facts.enabled) {
     return {
       state: "off",
       ok: false,
-      note: "Switched off for this company",
-      title: "CodeGraph is switched off for this company",
+      note: "Switched off for this organization",
+      title: "CodeGraph is switched off for this organization",
     };
   }
 
-  if (!readiness.repository.configured) {
+  // Repositories an operator has switched off are not a problem to report: the
+  // absence is deliberate, so they are excluded rather than counted as missing.
+  const usable = facts.repositories.filter((repo) => repo.blocked !== true);
+
+  if (usable.length === 0) {
     return {
-      state: "no-repository",
+      state: facts.repositories.length > 0 ? "off" : "no-repository",
       ok: false,
-      note: "No repository in this company yet",
+      // Distinguishes the two cases, which have different fixes.
+      note:
+        facts.repositories.length > 0
+          ? "All repositories switched off"
+          : "No repository in this organization yet",
       title:
-        "No repository yet. One appears once a project in this company has a workspace.",
+        facts.repositories.length > 0
+          ? "Every repository in this organization is switched off in Settings → Plugins → CodeGraph"
+          : "No repository yet. One appears once a project in this organization has a repository workspace.",
     };
   }
 
-  if (!readiness.repository.indexed) {
+  const indexed = usable.filter((repo) => repo.indexed).length;
+  if (indexed === 0) {
     return {
       state: "unindexed",
       ok: false,
@@ -69,5 +95,13 @@ export function sidebarStatus(readiness: SidebarReadiness | null | undefined): S
     };
   }
 
-  return { state: "ready", ok: true, note: null, title: "Repository indexed" };
+  return {
+    state: "ready",
+    ok: true,
+    note: null,
+    title:
+      usable.length === 1
+        ? "Repository indexed"
+        : `${indexed} of ${usable.length} repositories indexed`,
+  };
 }

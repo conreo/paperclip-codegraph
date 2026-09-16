@@ -20,18 +20,30 @@
 import { usePluginData, useHostNavigation, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 
 import { StatusLine, styles } from "./chrome.js";
-import { sidebarStatus, type SidebarReadiness } from "./sidebar-status.js";
+import { sidebarStatus } from "./sidebar-status.js";
 import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
 
 export function CodeGraphSidebar({ context }: PluginSidebarProps) {
   const navigation = useHostNavigation();
-  const { data: readiness } = usePluginData<SidebarReadiness>(DATA_KEYS.readiness);
-  const status = sidebarStatus(readiness);
+  const companyId = context.companyId;
+
+  // The same read the settings page uses, so the nav badge and the page can never
+  // disagree about whether this organisation has a repository. The `readiness`
+  // handler is deliberately not used here: it reports the governance *binding*,
+  // which is empty on an organisation that is working fine.
+  const { data } = usePluginData<{
+    enabled?: boolean;
+    repositories: Array<{ indexed: boolean; blocked?: boolean }>;
+  }>(DATA_KEYS.graphProjects, { companyId });
+
+  const status = sidebarStatus(
+    data ? { enabled: data.enabled !== false, repositories: data.repositories } : null,
+  );
 
   // Outside a company there is no `/codegraph` route to link to, so the entry
   // says so rather than offering a dead link.
-  if (!context.companyId) {
-    return <p style={styles.muted}>CodeGraph is configured per company.</p>;
+  if (!companyId) {
+    return <p style={styles.muted}>CodeGraph is configured per organization.</p>;
   }
 
   return (

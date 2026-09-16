@@ -53,6 +53,15 @@ export interface GraphEdge {
   source: string;
   target: string;
   kind: string;
+  /**
+   * The line in the *source* file that makes the call, when the index records
+   * one. `calls` edges always do; `contains` edges do not, which is why this is
+   * nullable rather than assumed.
+   *
+   * This is what lets the reader align a callee with the line that calls it —
+   * the thing that makes a call graph readable rather than a diagram.
+   */
+  line: number | null;
 }
 
 export interface Graph {
@@ -75,7 +84,7 @@ const NODE_COLUMNS = [
   "end_line",
 ] as const;
 
-const EDGE_COLUMNS = ["source", "target", "kind"] as const;
+const EDGE_COLUMNS = ["source", "target", "kind", "line"] as const;
 
 function openIndex(projectPath: string): DatabaseSync {
   const dbPath = path.join(projectPath, CODEGRAPH_INDEX_DIR, INDEX_DB_FILE);
@@ -245,6 +254,7 @@ export function neighbourhood(
               source: String(raw["source"]),
               target: String(raw["target"]),
               kind: String(raw["kind"] ?? ""),
+              line: typeof raw["line"] === "number" ? raw["line"] : null,
             };
             edges.set(`${edge.source}->${edge.target}:${edge.kind}`, edge);
 
@@ -275,6 +285,69 @@ export function neighbourhood(
       truncated,
       edgeKinds: [...new Set([...edges.values()].map((edge) => edge.kind))].sort(),
     };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The calls a symbol makes, with the line in its own source that makes each one.
+ *
+ * One hop, ordered by line, so a reader can walk down the source and see each
+ * call beside the statement that triggers it. These are the edges that make the
+ * right-hand pane of the reader useful; the graph view uses `neighbourhood`
+ * for the shape, and this for the detail.
+ *
+ * Self-calls are dropped: a recursive function calling itself would otherwise
+ * appear beside its own definition with no line to point at.
+ */
+export function calleesOf(projectPath: string, nodeId: string): GraphEdge[] {
+  const db = openIndex(projectPath);
+  try {
+    assertSchema(db);
+    const rows = db
+      .prepare(
+        `SELECT ${EDGE_COLUMNS.join(", ")} FROM edges
+         WHERE source = ? AND line IS NOT NULL AND target <> ?
+         ORDER BY line ASC`,
+      )
+      .all(nodeId, nodeId) as Array<Record<string, unknown>>;
+
+    return rows.map((raw) => ({
+      source: String(raw["source"]),
+      target: String(raw["target"]),
+      kind: String(raw["kind"] ?? ""),
+      line: typeof raw["line"] === "number" ? raw["line"] : null,
+    }));
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The calls into a symbol, with the line in the *caller* that makes each one.
+ *
+ * Ordered by caller then line, so the caller pane groups naturally: everything
+ * one function does, in source order.
+ */
+export function callersOf(projectPath: string, nodeId: string): GraphEdge[] {
+  const db = openIndex(projectPath);
+  try {
+    assertSchema(db);
+    const rows = db
+      .prepare(
+        `SELECT ${EDGE_COLUMNS.join(", ")} FROM edges
+         WHERE target = ? AND line IS NOT NULL AND source <> ?
+         ORDER BY source ASC, line ASC`,
+      )
+      .all(nodeId, nodeId) as Array<Record<string, unknown>>;
+
+    return rows.map((raw) => ({
+      source: String(raw["source"]),
+      target: String(raw["target"]),
+      kind: String(raw["kind"] ?? ""),
+      line: typeof raw["line"] === "number" ? raw["line"] : null,
+    }));
   } finally {
     db.close();
   }

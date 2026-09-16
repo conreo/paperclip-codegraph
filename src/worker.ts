@@ -87,6 +87,8 @@ import {
 import { mergeGovernance, setAgentAccess, setProjectAccess } from "./governance/merge.js";
 import {
   GraphUnavailable,
+  calleesOf,
+  callersOf,
   neighbourhood,
   nodeById,
   searchNodes,
@@ -121,6 +123,14 @@ const registeredTools = new Set<string>();
  * wedged rather than busy — and the caller falls back to the workspace path.
  */
 const GIT_TIMEOUT_MS = 5_000;
+
+/**
+ * How many callers or callees one pane of the reader shows.
+ *
+ * A widely-called helper has hundreds; none are useful past a screenful, and each
+ * one costs a node lookup.
+ */
+const MAX_READER_EDGES = 40;
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -1181,6 +1191,65 @@ const plugin = definePlugin({
           hasGitEntry: await isGitRepository(root),
           containmentRootCount: roots.length,
           gitAvailable: (await gitIdentityRunner()) !== null,
+        };
+      } catch (error) {
+        return graphFailure(error);
+      }
+    });
+
+    /**
+     * The three panes of the reader: who calls this symbol, and what it calls.
+     *
+     * One request rather than three, because the reader draws them together and
+     * three round-trips through the bridge would show the panes arriving at
+     * different times. Callers and callees carry the line in *their* file that
+     * makes the call, resolved to a name here so the client does not have to look
+     * up ids it cannot see.
+     *
+     * Only the top slice of each side is returned: a widely-called symbol has
+     * hundreds of callers, and none of them are useful past the first screenful.
+     * The counts are reported alongside so the client can say what it left out.
+     */
+    ctx.data.register(DATA_KEYS.graphReader, async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      const nodeId = asString(params?.["nodeId"]);
+      if (!companyId || !nodeId) return { error: "companyId and nodeId are required" };
+
+      const limit = MAX_READER_EDGES;
+      try {
+        const projectPath = await repositoryForProject(companyId, asString(params?.["projectId"]));
+        const seed = nodeById(projectPath, nodeId);
+        if (!seed) {
+          return { error: "That symbol is not in the current index.", reason: "not_indexed" };
+        }
+
+        const resolve = (edge: { source: string; target: string; kind: string; line: number | null }, direction: "in" | "out") => {
+          const otherId = direction === "in" ? edge.source : edge.target;
+          const node = nodeById(projectPath, otherId);
+          return {
+            id: otherId,
+            name: node?.name ?? "(unknown symbol)",
+            qualifiedName: node?.qualifiedName ?? "",
+            kind: node?.kind ?? "",
+            filePath: node?.filePath ?? "",
+            startLine: node?.startLine ?? null,
+            endLine: node?.endLine ?? null,
+            /** The line in the caller/callee's own file that makes the call. */
+            callLine: edge.line,
+            edgeKind: edge.kind,
+          };
+        };
+
+        const callerEdges = callersOf(projectPath, nodeId);
+        const calleeEdges = calleesOf(projectPath, nodeId);
+
+        return {
+          seed,
+          callers: callerEdges.slice(0, limit).map((edge) => resolve(edge, "in")),
+          callees: calleeEdges.slice(0, limit).map((edge) => resolve(edge, "out")),
+          callerCount: callerEdges.length,
+          calleeCount: calleeEdges.length,
+          truncated: callerEdges.length > limit || calleeEdges.length > limit,
         };
       } catch (error) {
         return graphFailure(error);

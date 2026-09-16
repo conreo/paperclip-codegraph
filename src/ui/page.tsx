@@ -1,34 +1,34 @@
 /**
  * The CodeGraph page.
  *
- * A call graph is wide and tall at once, so this is a page rather than a panel:
- * `/:companyPrefix/codegraph`. The layout is chosen so that *position means
- * something* — callers above the symbol you searched for, callees below — which
- * is the whole reason a force-directed blob would be useless here.
+ * Modelled on CodeGraph's own `codegraph ui` rather than invented, because that
+ * reader already answers the question this page exists to answer: *who calls
+ * this, and what does it call?* The layout is three panes —
  *
- * Three constraints shaped the implementation:
+ *     callers  |  the symbol's verbatim source  |  callees
  *
- * 1. The CodeGraph viewer binds loopback, and plugin routes return JSON only
- *    (`PLUGIN_SPEC.md`), so the graph is read from the index by the worker and
- *    drawn here. No iframe, no second server.
+ * — and the detail that makes it work is that each callee is drawn **beside the
+ * line that calls it**. A call graph as a diagram answers "what is connected to
+ * what"; aligned with the source it answers "where does this happen", which is
+ * what someone reading code actually asks.
+ *
+ * Two constraints shaped this:
+ *
+ * 1. The CodeGraph viewer binds loopback and plugin UI routes return JSON only,
+ *    so it cannot be embedded. The worker reads the index and this draws it.
  * 2. Nothing here accepts a path. The operator picks a *project*; the worker
- *    resolves that project's workspace through the host, as the tool path does.
- * 3. Interaction is deliberately small: search, click a node to re-centre, pick
- *    depth. Everything that changes what is drawn is visible on screen.
+ *    resolves its repository through the host, as every other surface does.
+ *
+ * A repository selector appears in the header when the organisation has more than
+ * one, since the graph is per repository while search spans them.
  */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import {
-  KeyValueList,
-  Spinner,
-  StatusBadge,
-  usePluginData,
-  type PluginPageProps,
-} from "@paperclipai/plugin-sdk/ui";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
 
-import { computeLayout, type LayoutEdge, type LayoutNode } from "../graph/layout.js";
+import { DATA_KEYS } from "../plugin-keys.js";
 import { sanitizeErrorMessage } from "../errors.js";
-import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
+import { reader } from "./chrome.js";
 
 // ---------------------------------------------------------------------------
 // Wire shapes
@@ -38,35 +38,40 @@ interface RepoRow {
   projectId: string;
   name: string;
   alias: string;
+  repoName?: string | null;
   indexed: boolean;
+  blocked?: boolean;
 }
 
-interface GraphNodeDto {
+interface SymbolRef {
   id: string;
   name: string;
-  kind: string;
   qualifiedName: string;
+  kind: string;
   filePath: string;
   startLine: number | null;
   endLine: number | null;
 }
 
-interface GraphDto {
-  nodes: GraphNodeDto[];
-  edges: Array<{ source: string; target: string; kind: string }>;
-  truncated: boolean;
-  edgeKinds: string[];
+interface CallRef extends SymbolRef {
+  /** The line in this caller/callee's own file that makes the call. */
+  callLine: number | null;
+  edgeKind: string;
 }
 
-interface NeighbourhoodResponse {
-  graph?: GraphDto;
-  seedId?: string;
+interface ReaderResponse {
+  seed?: SymbolRef;
+  callers?: CallRef[];
+  callees?: CallRef[];
+  callerCount?: number;
+  calleeCount?: number;
+  truncated?: boolean;
   error?: string;
   reason?: string;
 }
 
 interface SearchResponse {
-  results?: GraphNodeDto[];
+  results?: SymbolRef[];
   error?: string;
 }
 
@@ -80,8 +85,21 @@ interface SourceResponse {
   error?: string;
 }
 
-const DEPTHS = [1, 2, 3] as const;
-const SEARCH_DEBOUNCE_MS = 250;
+const KIND_LABELS: Record<string, string> = {
+  function: "Functions",
+  method: "Methods",
+  class: "Classes",
+  interface: "Interfaces",
+  type: "Types",
+  constant: "Constants",
+  component: "Components",
+  import: "Imports",
+  file: "Files",
+};
+
+function kindGroup(kind: string): string {
+  return KIND_LABELS[kind] ?? (kind ? `${kind[0]!.toUpperCase()}${kind.slice(1)}s` : "Other");
+}
 
 // ---------------------------------------------------------------------------
 // Page
@@ -96,111 +114,86 @@ export function CodeGraphPage({ context }: PluginPageProps) {
     enabled?: boolean;
   }>(DATA_KEYS.graphProjects, { companyId });
 
-  const repositories = reposData?.repositories ?? [];
+  const repositories = useMemo(
+    () => (reposData?.repositories ?? []).filter((repo) => repo.blocked !== true),
+    [reposData],
+  );
   const organization = reposData?.organization ?? null;
 
   const [projectId, setProjectId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [seedId, setSeedId] = useState<string | null>(null);
-  const [depth, setDepth] = useState<number>(1);
+  const [selected, setSelected] = useState<SymbolRef | null>(null);
 
-  // Default to the first indexed repository once the list arrives: opening the
-  // page on a repository with no index would show an error for no reason.
+  // Open on the first indexed repository, so the page never greets an operator
+  // with an error about a repository they did not choose.
   useEffect(() => {
     if (projectId || repositories.length === 0) return;
     const preferred = repositories.find((repo) => repo.indexed) ?? repositories[0];
     if (preferred) setProjectId(preferred.projectId);
   }, [projectId, repositories]);
 
-  // The selector changed: whatever was drawn belongs to another repository.
+  // Search is scoped to the chosen repository, so switching it invalidates both
+  // the results and whatever was open.
   useEffect(() => {
-    setSeedId(null);
+    setSelected(null);
   }, [projectId]);
 
   useEffect(() => {
-    const timer = setTimeout(() => setDebounced(query.trim()), SEARCH_DEBOUNCE_MS);
+    const timer = setTimeout(() => setDebounced(query.trim()), 200);
     return () => clearTimeout(timer);
   }, [query]);
 
-  const searchParams = useMemo(
-    () => ({ companyId, projectId, query: debounced }),
-    [companyId, projectId, debounced],
-  );
-  const graphParams = useMemo(
-    () => ({ companyId, projectId, nodeId: seedId, depth }),
-    [companyId, projectId, seedId, depth],
+  const { data: searchData, loading: searching } = usePluginData<SearchResponse>(
+    DATA_KEYS.graphSearch,
+    { companyId, projectId, query: debounced },
   );
 
-  const {
-    data: searchData,
-    loading: searching,
-  } = usePluginData<SearchResponse>(DATA_KEYS.graphSearch, searchParams);
-
-  const {
-    data: graphData,
-    loading: graphLoading,
-  } = usePluginData<NeighbourhoodResponse>(DATA_KEYS.graphNeighbourhood, graphParams);
-
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  const seedNode = useMemo(() => {
-    if (!selectedId || !graphData?.graph) return null;
-    return graphData.graph.nodes.find((node) => node.id === selectedId) ?? null;
-  }, [selectedId, graphData]);
+  const readerParams = useMemo(
+    () => ({ companyId, projectId, nodeId: selected?.id ?? null }),
+    [companyId, projectId, selected],
+  );
+  const { data: readerData, loading: readerLoading } = usePluginData<ReaderResponse>(
+    DATA_KEYS.graphReader,
+    readerParams,
+  );
 
   const { data: sourceData, loading: sourceLoading } = usePluginData<SourceResponse>(
     DATA_KEYS.graphSource,
-    { companyId, projectId, nodeId: selectedId },
+    { companyId, projectId, nodeId: selected?.id ?? null },
   );
 
-  // A fresh seed replaces whatever was selected before.
-  useEffect(() => {
-    setSelectedId(seedId);
-  }, [seedId]);
-
   const results = searchData?.results ?? [];
+  const active = repositories.find((repo) => repo.projectId === projectId) ?? null;
 
   if (!companyId) {
-    return <Shell><p style={styles.muted}>Open this page inside a company to see its code graph.</p></Shell>;
-  }
-
-  if (reposLoading && repositories.length === 0) {
-    return <Shell><Spinner label="Finding repositories" /></Shell>;
-  }
-
-  if (repositories.length === 0) {
     return (
-      <Shell>
-        <p style={styles.muted}>
-          This organization has no repository workspaces, so there is no graph to draw. A
-          repository appears here once a Paperclip project in this organization has one.
-        </p>
-      </Shell>
+      <div style={styles.page}>
+        <p style={styles.dim}>Open this page inside an organization to read its code graph.</p>
+      </div>
     );
   }
 
-  const active = repositories.find((repo) => repo.projectId === projectId) ?? null;
+  if (reposLoading && repositories.length === 0) {
+    return (
+      <div style={styles.page}>
+        <p style={styles.dim}>Finding repositories…</p>
+      </div>
+    );
+  }
 
   return (
-    <Shell>
-      <header style={styles.header}>
-        <div style={styles.headerLeft}>
-          <h2 style={styles.h2}>
-            CodeGraph
-            {organization ? ` · ${organization}` : context.companyPrefix ? ` · ${context.companyPrefix}` : ""}
-          </h2>
-          <p style={styles.muted}>
-            Who calls what in this organization&apos;s code. Callers above, callees below.
-          </p>
-        </div>
-        <div style={styles.headerRight}>
-          <label style={styles.field}>
-            <span style={styles.fieldLabel}>Repository</span>
+    <div style={styles.page}>
+      <header style={styles.topbar}>
+        <div style={styles.brand}>
+          <span aria-hidden style={styles.brandMark} />
+          <span style={styles.brandName}>CodeGraph</span>
+          {repositories.length > 1 ? (
             <select
+              aria-label="Repository"
               value={projectId ?? ""}
               onChange={(event) => setProjectId(event.target.value || null)}
-              style={styles.select}
+              style={styles.repoSelect}
             >
               {repositories.map((repo) => (
                 <option key={repo.projectId} value={repo.projectId}>
@@ -209,579 +202,636 @@ export function CodeGraphPage({ context }: PluginPageProps) {
                 </option>
               ))}
             </select>
-          </label>
-          {active ? (
-            <StatusBadge
-              label={active.indexed ? "Indexed" : "Not indexed"}
-              status={active.indexed ? "ok" : "warning"}
-            />
-          ) : null}
+          ) : (
+            <span style={styles.brandProject}>
+              {active?.repoName ?? active?.alias ?? organization ?? "no repository"}
+            </span>
+          )}
+        </div>
+
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search a symbol or a file…"
+          aria-label="Search a symbol or a file"
+          style={styles.search}
+        />
+
+        <div style={styles.stats}>
+          {active?.indexed
+            ? `${repositories.length} repositor${repositories.length === 1 ? "y" : "ies"} · indexed`
+            : active
+              ? "not indexed"
+              : ""}
         </div>
       </header>
 
-      {active && !active.indexed ? (
-        <p style={styles.warn}>
-          This repository has no index yet. Index it from the CodeGraph sidebar, then reload
-          this page. Nothing is drawn from an unindexed repository.
+      {repositories.length === 0 ? (
+        <p style={styles.notice}>
+          This organization has no repository workspaces, so there is nothing to read. A
+          repository appears once a Paperclip project here has one.
+        </p>
+      ) : active && !active.indexed ? (
+        <p style={styles.notice}>
+          This repository has no index yet. Build one in Settings → Plugins → CodeGraph, then
+          reopen this page.
         </p>
       ) : null}
 
       <div style={styles.body}>
-        <aside style={styles.side}>
-          <label style={styles.field}>
-            <span style={styles.fieldLabel}>Find a symbol</span>
-            <input
-              type="search"
-              value={query}
-              placeholder="createOrder, InvoiceService…"
-              onChange={(event) => setQuery(event.target.value)}
-              style={styles.input}
-              aria-label="Find a symbol"
-            />
-          </label>
+        <Pane
+          title="Callers"
+          count={readerData?.callerCount}
+          shown={readerData?.callers?.length}
+          empty={selected ? "Nothing calls this." : "Who calls the symbol you open."}
+        >
+          {(readerData?.callers ?? []).map((call) => (
+            <CallRow key={`in:${call.id}:${call.callLine}`} call={call} onOpen={setSelected} />
+          ))}
+        </Pane>
 
-          {searching && results.length === 0 ? <Spinner size="sm" label="Searching" /> : null}
-
-          {debounced.length === 0 ? (
-            <p style={styles.muted}>Search for a function, class, or method to draw its graph.</p>
-          ) : results.length === 0 && !searching ? (
-            <p style={styles.muted}>No symbol in this repository matches “{debounced}”.</p>
+        <main style={styles.sourcePane}>
+          {!selected ? (
+            debounced.length === 0 ? (
+              <div style={styles.emptyState}>
+                <h2 style={styles.emptyTitle}>Nothing selected</h2>
+                <p style={styles.emptyBody}>
+                  Search for a symbol to start reading{organization ? ` in ${organization}` : ""}.
+                </p>
+                <p style={styles.emptyBody}>
+                  Every symbol you open shows who calls it on the left, its source here, and
+                  what it calls on the right — each callee lined up with the line that calls it.
+                </p>
+              </div>
+            ) : (
+              <div style={styles.resultsWrap}>
+                {searching && results.length === 0 ? (
+                  <p style={styles.dim}>Searching…</p>
+                ) : results.length === 0 ? (
+                  <p style={styles.dim}>No symbol matches “{debounced}”.</p>
+                ) : (
+                  <Results results={results} onOpen={setSelected} />
+                )}
+              </div>
+            )
           ) : (
-            <ul style={styles.results}>
-              {results.map((node) => (
-                <li key={node.id}>
-                  <button
-                    type="button"
-                    onClick={() => setSeedId(node.id)}
-                    style={node.id === seedId ? styles.resultActive : styles.result}
-                    title={node.qualifiedName || node.name}
-                  >
-                    <span style={styles.resultName}>{node.name}</span>
-                    <span style={styles.resultMeta}>
-                      {node.kind} · {node.filePath}
-                      {node.startLine === null ? "" : `:${node.startLine}`}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <div style={styles.depthRow}>
-            <span style={styles.fieldLabel}>Depth</span>
-            {DEPTHS.map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setDepth(value)}
-                style={value === depth ? styles.depthActive : styles.depth}
-                aria-pressed={value === depth}
-              >
-                {value}
-              </button>
-            ))}
-            <span style={styles.muted}>hops</span>
-          </div>
-        </aside>
-
-        <main style={styles.main}>
-          {!seedId ? (
-            <p style={styles.muted}>Pick a symbol on the left to draw its call graph.</p>
-          ) : graphLoading && !graphData?.graph ? (
-            <Spinner label="Reading the index" />
-          ) : graphData?.error ? (
-            <p style={styles.bad}>
-              {sanitizeErrorMessage(graphData.error)}
-              {graphData.reason ? ` (${graphData.reason})` : ""}
-            </p>
-          ) : graphData?.graph ? (
-            <GraphView
-              graph={graphData.graph}
-              seedId={seedId}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              onRecentre={setSeedId}
+            <Source
+              symbol={selected}
+              source={sourceData}
+              loading={sourceLoading}
+              callees={readerData?.callees ?? []}
+              onOpen={setSelected}
             />
-          ) : null}
+          )}
         </main>
 
-        <aside style={styles.detail}>
-          {seedNode ? (
-            <NodeDetail
-              node={seedNode}
-              source={sourceData}
-              sourceLoading={sourceLoading}
-            />
-          ) : (
-            <p style={styles.muted}>Select a node to see its details and source.</p>
-          )}
-        </aside>
-      </div>
-    </Shell>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Graph
-// ---------------------------------------------------------------------------
-
-function GraphView({
-  graph,
-  seedId,
-  selectedId,
-  onSelect,
-  onRecentre,
-}: {
-  graph: GraphDto;
-  seedId: string;
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  onRecentre: (id: string) => void;
-}) {
-  const layout = useMemo(() => computeLayout(graph, seedId), [graph, seedId]);
-  const scroller = useRef<HTMLDivElement | null>(null);
-  const [hovered, setHovered] = useState<string | null>(null);
-
-  // Centre the seed on first draw and whenever the seed changes, so a wide graph
-  // opens on the symbol rather than at its left edge.
-  useEffect(() => {
-    const element = scroller.current;
-    if (!element) return;
-    const target = Math.max(0, layout.centerX - element.clientWidth / 2);
-    element.scrollLeft = target;
-  }, [layout.centerX, seedId]);
-
-  const active = hovered ?? selectedId;
-  const touched = useMemo(() => {
-    if (!active) return null;
-    const ids = new Set<string>();
-    for (const edge of layout.edges) {
-      if (edge.source === active) ids.add(edge.target);
-      if (edge.target === active) ids.add(edge.source);
-    }
-    return ids;
-  }, [active, layout.edges]);
-
-  const kinds = graph.edgeKinds.length > 0 ? graph.edgeKinds : ["calls"];
-
-  return (
-    <div style={styles.graphWrap}>
-      <div style={styles.legend}>
-        {kinds.map((kind, index) => (
-          <span key={kind} style={styles.legendItem}>
-            <span
-              aria-hidden
-              style={{
-                ...styles.legendSwatch,
-                background: EDGE_COLOURS[index % EDGE_COLOURS.length],
-              }}
-            />
-            {kind}
-          </span>
-        ))}
-        <span style={styles.legendItem}>{graph.nodes.length} symbols</span>
-        {graph.truncated || layout.truncated ? (
-          <span style={styles.legendTruncated}>showing a capped subset</span>
-        ) : null}
-      </div>
-
-      <div ref={scroller} style={styles.scroller}>
-        <svg
-          role="img"
-          aria-label={`Call graph for ${graph.nodes.find((n) => n.id === seedId)?.name ?? "symbol"}`}
-          width={layout.width}
-          height={layout.height}
-          viewBox={`0 0 ${layout.width} ${layout.height}`}
-          style={styles.svg}
+        <Pane
+          title="Callees"
+          count={readerData?.calleeCount}
+          shown={readerData?.callees?.length}
+          empty={selected ? "This calls nothing recorded." : "What the symbol you open calls."}
         >
-          <defs>
-            <marker
-              id="codegraph-arrow"
-              viewBox="0 0 8 8"
-              refX="7"
-              refY="4"
-              markerWidth="7"
-              markerHeight="7"
-              orient="auto-start-reverse"
-            >
-              <path d="M 0 0 L 8 4 L 0 8 z" fill="currentColor" />
-            </marker>
-          </defs>
-
-          {layout.edges.map((edge) => (
-            <EdgePath
-              key={`${edge.source}->${edge.target}:${edge.kind}`}
-              edge={edge}
-              kinds={kinds}
-              active={active}
-              touched={touched}
-            />
+          {(readerData?.callees ?? []).map((call) => (
+            <CallRow key={`out:${call.id}:${call.callLine}`} call={call} onOpen={setSelected} />
           ))}
-
-          {layout.nodes.map((node) => (
-            <NodeBox
-              key={node.id}
-              node={node}
-              selected={node.id === selectedId}
-              dimmed={touched !== null && node.id !== active && !touched.has(node.id)}
-              onHover={setHovered}
-              onSelect={onSelect}
-              onRecentre={onRecentre}
-            />
-          ))}
-        </svg>
+        </Pane>
       </div>
 
-      <p style={styles.muted}>
-        Click a node to see its source. Double-click to re-centre the graph on it.
-      </p>
+      {selected ? (
+        <footer style={styles.trail}>
+          <span style={styles.trailLabel}>Reading</span>
+          <code style={styles.trailCode}>
+            {selected.name} — {selected.filePath}
+            {selected.startLine === null ? "" : `:${selected.startLine}`}
+          </code>
+          <button type="button" style={styles.trailButton} onClick={() => setSelected(null)}>
+            Back to search
+          </button>
+          {readerLoading ? <span style={styles.dim}>updating…</span> : null}
+          {readerData?.error ? (
+            <span style={styles.error}>{sanitizeErrorMessage(readerData.error)}</span>
+          ) : null}
+        </footer>
+      ) : null}
     </div>
   );
 }
 
-/** Background fills for edges, one colour per edge kind. */
-const EDGE_COLOURS = ["#64748b", "#0ea5e9", "#a855f7", "#f59e0b", "#14b8a6"];
-
-function EdgePath({
-  edge,
-  kinds,
-  active,
-  touched,
-}: {
-  edge: LayoutEdge;
-  kinds: string[];
-  active: string | null;
-  touched: Set<string> | null;
-}) {
-  const index = Math.max(0, kinds.indexOf(edge.kind));
-  const colour = EDGE_COLOURS[index % EDGE_COLOURS.length];
-  const isTouched = active !== null && (edge.source === active || edge.target === active);
-  const dim = touched !== null && !isTouched && !edge.isPrimary;
-
-  return (
-    <path
-      d={edge.path}
-      fill="none"
-      stroke={isTouched ? "var(--accent, #2563eb)" : colour}
-      strokeWidth={isTouched ? 2.4 : edge.isPrimary ? 1.8 : 1.2}
-      strokeOpacity={dim ? 0.18 : isTouched ? 1 : 0.65}
-      markerEnd="url(#codegraph-arrow)"
-      style={{ color: isTouched ? "var(--accent, #2563eb)" : colour }}
-    />
-  );
-}
-
-function NodeBox({
-  node,
-  selected,
-  dimmed,
-  onHover,
-  onSelect,
-  onRecentre,
-}: {
-  node: LayoutNode;
-  selected: boolean;
-  dimmed: boolean;
-  onHover: (id: string | null) => void;
-  onSelect: (id: string) => void;
-  onRecentre: (id: string) => void;
-}) {
-  const x = node.x - node.width / 2;
-  const y = node.y - node.height / 2;
-
-  const fill = node.isSeed
-    ? "var(--accent, #2563eb)"
-    : selected
-      ? "var(--card, #ffffff)"
-      : "var(--card, #ffffff)";
-  const stroke = node.isSeed
-    ? "var(--accent, #2563eb)"
-    : selected
-      ? "var(--accent, #2563eb)"
-      : "var(--border, #d4d4d8)";
-  const labelColour = node.isSeed ? "#ffffff" : "var(--foreground, #18181b)";
-
-  return (
-    <g
-      role="button"
-      tabIndex={0}
-      aria-label={`${node.name}, ${node.kind}`}
-      opacity={dimmed ? 0.35 : 1}
-      style={{ cursor: "pointer" }}
-      onMouseEnter={() => onHover(node.id)}
-      onMouseLeave={() => onHover(null)}
-      onFocus={() => onHover(node.id)}
-      onBlur={() => onHover(null)}
-      onClick={() => onSelect(node.id)}
-      onDoubleClick={() => onRecentre(node.id)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect(node.id);
-        }
-      }}
-    >
-      <rect
-        x={x}
-        y={y}
-        width={node.width}
-        height={node.height}
-        rx={7}
-        fill={fill}
-        stroke={stroke}
-        strokeWidth={node.isSeed || selected ? 2 : 1}
-      />
-      <text
-        x={node.x}
-        y={node.y + 4}
-        textAnchor="middle"
-        fontSize={12}
-        fontWeight={node.isSeed ? 600 : 500}
-        fill={labelColour}
-        style={{ pointerEvents: "none", userSelect: "none" }}
-      >
-        {truncateLabel(node.name, node.width)}
-      </text>
-    </g>
-  );
-}
-
-/** Node text is clipped to the box rather than allowed to spill over a neighbour. */
-function truncateLabel(name: string, width: number): string {
-  const capacity = Math.max(6, Math.floor((width - 16) / 7.2));
-  return name.length <= capacity ? name : `${name.slice(0, capacity - 1)}…`;
-}
-
 // ---------------------------------------------------------------------------
-// Detail
+// Search results
 // ---------------------------------------------------------------------------
 
-function NodeDetail({
-  node,
-  source,
-  sourceLoading,
+/** Results grouped by symbol kind, the way the CodeGraph viewer lists them. */
+function Results({
+  results,
+  onOpen,
 }: {
-  node: GraphNodeDto;
-  source: SourceResponse | null;
-  sourceLoading: boolean;
+  results: SymbolRef[];
+  onOpen: (symbol: SymbolRef) => void;
 }) {
-  const pairs = [
-    { label: "Symbol", value: node.name },
-    { label: "Kind", value: node.kind },
-    { label: "Qualified name", value: node.qualifiedName || "—" },
-    { label: "File", value: node.filePath },
-    {
-      label: "Lines",
-      value:
-        node.startLine === null
-          ? "—"
-          : node.endLine === null || node.endLine === node.startLine
-            ? String(node.startLine)
-            : `${node.startLine}–${node.endLine}`,
-    },
-  ];
+  const groups = useMemo(() => {
+    const byGroup = new Map<string, SymbolRef[]>();
+    for (const symbol of results) {
+      const key = kindGroup(symbol.kind);
+      const list = byGroup.get(key);
+      if (list) list.push(symbol);
+      else byGroup.set(key, [symbol]);
+    }
+    return [...byGroup.entries()];
+  }, [results]);
 
   return (
     <div>
-      <h3 style={styles.h3}>Source</h3>
-      <KeyValueList pairs={pairs} />
+      {groups.map(([group, symbols]) => (
+        <section key={group} style={styles.resultGroup}>
+          <h3 style={styles.resultGroupTitle}>{group}</h3>
+          <ul style={styles.resultList}>
+            {symbols.map((symbol) => (
+              <li key={symbol.id}>
+                <button type="button" style={styles.resultRow} onClick={() => onOpen(symbol)}>
+                  <span style={styles.resultGlyph}>{glyphFor(symbol.kind)}</span>
+                  <span style={styles.resultName}>{symbol.name}</span>
+                  {symbol.qualifiedName && symbol.qualifiedName !== symbol.name ? (
+                    <span style={styles.resultQualified}>{symbol.qualifiedName}</span>
+                  ) : null}
+                  <span style={styles.resultWhere}>
+                    {symbol.filePath}
+                    {symbol.startLine === null ? "" : `:${symbol.startLine}`}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+  );
+}
 
-      <h4 style={styles.h4}>Code</h4>
-      {sourceLoading && !source?.excerpt ? (
-        <Spinner size="sm" label="Reading source" />
+function glyphFor(kind: string): string {
+  if (kind === "function" || kind === "method") return "ƒ";
+  if (kind === "class") return "C";
+  if (kind === "interface" || kind === "type") return "I";
+  if (kind === "component") return "◫";
+  if (kind === "constant") return "const";
+  if (kind === "import") return "im";
+  return "•";
+}
+
+// ---------------------------------------------------------------------------
+// Source
+// ---------------------------------------------------------------------------
+
+/**
+ * The symbol's source, in the middle pane.
+ *
+ * The worker returns a bounded, line-numbered excerpt, so this is two columns: a
+ * gutter of true line numbers and the text. Keeping the numbers from the file
+ * rather than re-counting the excerpt means a line cited here is the same line a
+ * reviewer's editor shows, and the same line the caller and callee panes cite.
+ *
+ * Lines that call something are tinted, so the correspondence between this pane
+ * and the right-hand one is visible without hunting for it.
+ */
+function Source({
+  symbol,
+  source,
+  loading,
+  callees,
+  onOpen,
+}: {
+  symbol: SymbolRef;
+  source: SourceResponse | null;
+  loading: boolean;
+  callees: CallRef[];
+  onOpen: (symbol: SymbolRef) => void;
+}) {
+  const callLines = useMemo(
+    () =>
+      new Set(
+        callees
+          .map((call) => call.callLine)
+          .filter((line): line is number => line !== null),
+      ),
+    [callees],
+  );
+
+  const lines = useMemo(() => {
+    const text = source?.excerpt ?? "";
+    if (text.length === 0) return [];
+    return text.split("\n").map((row) => {
+      const tab = row.indexOf("\t");
+      const number = tab === -1 ? null : Number(row.slice(0, tab));
+      return { number, text: tab === -1 ? row : row.slice(tab + 1) };
+    });
+  }, [source?.excerpt]);
+
+  return (
+    <div style={styles.sourceWrap}>
+      <div style={styles.sourceHead}>
+        <span style={styles.sourceName}>{symbol.name}</span>
+        <span style={styles.sourceKind}>{symbol.kind}</span>
+        <span style={styles.sourcePath}>
+          {symbol.filePath}
+          {symbol.startLine === null ? "" : `:${symbol.startLine}`}
+        </span>
+      </div>
+
+      {loading && lines.length === 0 ? (
+        <p style={styles.dim}>Reading source…</p>
       ) : source?.error ? (
-        <p style={styles.bad}>{sanitizeErrorMessage(source.error)}</p>
-      ) : source?.excerpt ? (
-        <>
-          <pre style={styles.code}>{source.excerpt}</pre>
-          {source.truncated ? (
-            <p style={styles.muted}>
-              Showing lines {source.startLine}–{source.endLine}. The index reports this symbol
-              extends further than what is shown — it may be longer than the excerpt limit, or
-              the working tree may have moved on since it was indexed.
-            </p>
-          ) : null}
-        </>
+        <p style={styles.error}>{sanitizeErrorMessage(source.error)}</p>
+      ) : lines.length === 0 ? (
+        <p style={styles.dim}>{source?.reason ?? "No source is available for this symbol."}</p>
       ) : (
-        <p style={styles.muted}>
-          {source?.reason ?? "No source excerpt available for this symbol."}
-        </p>
+        <div style={styles.code}>
+          {lines.map((line, index) => (
+            <div
+              key={line.number ?? `x${index}`}
+              style={
+                line.number !== null && callLines.has(line.number)
+                  ? styles.codeLineCalling
+                  : styles.codeLine
+              }
+            >
+              <span style={styles.gutter}>{line.number ?? ""}</span>
+              <span style={styles.codeText}>{line.text}</span>
+            </div>
+          ))}
+        </div>
       )}
+
+      {source?.truncated ? (
+        <p style={styles.dim}>
+          Showing lines {source.startLine}–{source.endLine}. The index reports this symbol
+          extends further; it may be longer than the excerpt limit, or the working tree may
+          have moved on since it was indexed.
+        </p>
+      ) : null}
+
+      {/* The line-aligned list, mirroring the viewer's right-hand column. */}
+      {callees.filter((call) => call.callLine !== null).length > 0 ? (
+        <div style={styles.aligned}>
+          <h4 style={styles.alignedTitle}>Called from this source, in order</h4>
+          <ul style={styles.alignedList}>
+            {callees
+              .filter((call) => call.callLine !== null)
+              .slice()
+              .sort((a, b) => (a.callLine ?? 0) - (b.callLine ?? 0))
+              .map((call) => (
+                <li key={`${call.id}:${call.callLine}`} style={styles.alignedRow}>
+                  <span style={styles.alignedLine}>L{call.callLine}</span>
+                  <a
+                    href="#"
+                    style={styles.alignedLink}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onOpen(call);
+                    }}
+                  >
+                    {call.name}
+                  </a>
+                  <span style={styles.alignedWhere}>{call.filePath}</span>
+                </li>
+              ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Chrome
+// Panes
 // ---------------------------------------------------------------------------
 
-function Shell({ children }: { children: ReactNode }) {
-  return <div style={styles.page}>{children}</div>;
+function Pane({
+  title,
+  count,
+  shown,
+  empty,
+  children,
+}: {
+  title: string;
+  count?: number;
+  shown?: number;
+  empty: string;
+  children: ReactNode;
+}) {
+  const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children);
+  const hidden = count !== undefined && shown !== undefined ? count - shown : 0;
+
+  return (
+    <aside style={styles.pane}>
+      <div style={styles.paneHead}>
+        <h3 style={styles.paneTitle}>{title}</h3>
+        {count !== undefined && count > 0 ? <span style={styles.paneCount}>{count}</span> : null}
+      </div>
+      <div style={styles.paneBody}>
+        {hasChildren ? children : <p style={styles.dim}>{empty}</p>}
+      </div>
+      {hidden > 0 ? <p style={styles.dim}>+{hidden} more not shown</p> : null}
+    </aside>
+  );
 }
 
-/** Inline styles only: a plugin must not import the host's `ui/src` internals. */
+/** One caller or callee: its name, where it lives, and the line that calls. */
+function CallRow({ call, onOpen }: { call: CallRef; onOpen: (symbol: SymbolRef) => void }) {
+  const handle = useCallback(() => onOpen(call), [call, onOpen]);
+  return (
+    <button type="button" style={styles.callRow} onClick={handle}>
+      <span style={styles.callName}>{call.name}</span>
+      <span style={styles.callWhere}>
+        {call.filePath}
+        {call.callLine === null ? "" : `:${call.callLine}`}
+      </span>
+      {call.edgeKind && call.edgeKind !== "calls" ? (
+        <span style={styles.callKind}>{call.edgeKind}</span>
+      ) : null}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
+/**
+ * Warm paper, one ink scale, one accent — CodeGraph's own palette, so someone who
+ * knows `codegraph ui` recognises this page. Deliberately not the host's tokens:
+ * this is a light reading surface, and inheriting a dark theme would break it.
+ */
 const styles: Record<string, CSSProperties> = {
-  page: { display: "flex", flexDirection: "column", gap: 12, minHeight: 0, color: "inherit" },
-  header: {
+  page: {
     display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
-    gap: 16,
+    flexDirection: "column",
+    minHeight: 0,
+    height: "100%",
+    background: reader.paper,
+    color: reader.ink,
+    fontFamily: reader.sans,
+    fontSize: 13,
+  },
+  topbar: {
+    display: "flex",
+    alignItems: "center",
+    gap: 14,
+    padding: "0 14px",
+    minHeight: 48,
+    borderBottom: `1px solid ${reader.ruleFaint}`,
+    background: reader.paper,
     flexWrap: "wrap",
   },
-  headerLeft: { minWidth: 200 },
-  headerRight: { display: "flex", alignItems: "flex-end", gap: 10 },
-  h2: { fontSize: 20, fontWeight: 600, margin: "0 0 2px" },
-  h3: { fontSize: 14, fontWeight: 600, margin: "0 0 8px" },
-  h4: {
-    fontSize: 11,
-    fontWeight: 600,
-    margin: "16px 0 6px",
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-    color: "var(--muted-foreground, #71717a)",
+  brand: { display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" },
+  brandMark: {
+    width: 10,
+    height: 10,
+    borderRadius: 2,
+    background: reader.accent,
+    display: "inline-block",
   },
-  muted: { color: "var(--muted-foreground, #71717a)", fontSize: 13, margin: "6px 0" },
-  bad: { color: "var(--destructive, #dc2626)", fontSize: 13 },
-  warn: {
-    color: "var(--muted-foreground, #71717a)",
-    fontSize: 13,
-    margin: 0,
-    padding: "8px 12px",
-    borderRadius: 8,
-    border: "1px solid var(--border, #e4e4e7)",
-    background: "var(--muted, rgba(0,0,0,0.03))",
+  brandName: { fontWeight: 600, fontSize: 14, letterSpacing: -0.2 },
+  brandProject: { color: reader.ink2, fontFamily: reader.mono, fontSize: 12 },
+  repoSelect: {
+    fontFamily: reader.mono,
+    fontSize: 12,
+    padding: "3px 6px",
+    borderRadius: 4,
+    border: `1px solid ${reader.rule}`,
+    background: reader.paper,
+    color: reader.ink,
   },
-  body: { display: "flex", gap: 16, alignItems: "flex-start", minHeight: 0, flexWrap: "wrap" },
-  side: { flex: "0 0 248px", minWidth: 220 },
-  main: { flex: "1 1 420px", minWidth: 320 },
-  detail: {
-    flex: "0 0 320px",
-    minWidth: 260,
-    maxHeight: "70vh",
-    overflowY: "auto",
-    paddingLeft: 16,
-    borderLeft: "1px solid var(--border, #e4e4e7)",
-  },
-  field: { display: "block", marginBottom: 10 },
-  fieldLabel: {
-    display: "block",
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-    color: "var(--muted-foreground, #71717a)",
-    marginBottom: 4,
-  },
-  input: {
-    width: "100%",
-    boxSizing: "border-box",
-    padding: "8px 10px",
-    borderRadius: 6,
-    border: "1px solid var(--border, #e4e4e7)",
-    background: "var(--background, transparent)",
-    color: "inherit",
-    fontSize: 13,
-    fontFamily: "inherit",
-  },
-  select: {
+  search: {
+    flex: "1 1 260px",
+    minWidth: 200,
     padding: "7px 10px",
-    borderRadius: 6,
-    border: "1px solid var(--border, #e4e4e7)",
-    background: "var(--background, transparent)",
-    color: "inherit",
+    borderRadius: 4,
+    border: `1px solid ${reader.rule}`,
+    background: reader.paper,
+    color: reader.ink,
+    fontFamily: reader.sans,
     fontSize: 13,
-    fontFamily: "inherit",
-    minWidth: 180,
   },
-  results: { listStyle: "none", padding: 0, margin: "4px 0 0", maxHeight: "40vh", overflowY: "auto" },
-  result: {
-    display: "block",
-    width: "100%",
-    textAlign: "left",
-    padding: "7px 9px",
-    marginBottom: 4,
-    borderRadius: 6,
-    border: "1px solid var(--border, #e4e4e7)",
-    background: "transparent",
-    color: "inherit",
-    cursor: "pointer",
-    fontFamily: "inherit",
+  stats: { color: reader.ink3, fontSize: 11.5, fontFamily: reader.mono, flex: "0 0 auto" },
+  notice: {
+    margin: 0,
+    padding: "9px 14px",
+    background: reader.amberSoft,
+    color: reader.amber,
+    fontSize: 12.5,
   },
-  resultActive: {
-    display: "block",
-    width: "100%",
-    textAlign: "left",
-    padding: "7px 9px",
-    marginBottom: 4,
-    borderRadius: 6,
-    border: "1px solid var(--accent, #2563eb)",
-    background: "transparent",
-    color: "inherit",
-    cursor: "pointer",
-    fontFamily: "inherit",
+  body: {
+    display: "flex",
+    alignItems: "stretch",
+    flex: "1 1 auto",
+    minHeight: 0,
+    overflow: "hidden",
   },
-  resultName: { display: "block", fontSize: 13, fontWeight: 500 },
-  resultMeta: {
-    display: "block",
+  pane: {
+    flex: "0 0 232px",
+    display: "flex",
+    flexDirection: "column",
+    minWidth: 0,
+    borderRight: `1px solid ${reader.ruleFaint}`,
+    background: reader.paper2,
+    overflowY: "auto",
+  },
+  paneHead: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "9px 12px 6px",
+  },
+  paneTitle: {
+    margin: 0,
     fontSize: 11,
-    color: "var(--muted-foreground, #71717a)",
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: reader.ink3,
+  },
+  paneCount: { fontSize: 11, color: reader.ink4, fontFamily: reader.mono },
+  paneBody: { padding: "0 8px 12px", display: "flex", flexDirection: "column", gap: 1 },
+  sourcePane: {
+    flex: "1 1 auto",
+    minWidth: 0,
+    overflowY: "auto",
+    background: reader.paper,
+    padding: "0 0 24px",
+  },
+  resultsWrap: { padding: 16 },
+  resultGroup: { marginBottom: 18 },
+  resultGroupTitle: {
+    margin: "0 0 6px",
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: reader.ink3,
+  },
+  resultList: { listStyle: "none", margin: 0, padding: 0 },
+  resultRow: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: 8,
+    width: "100%",
+    textAlign: "left",
+    padding: "5px 8px",
+    border: "none",
+    borderLeft: "2px solid transparent",
+    background: "transparent",
+    color: "inherit",
+    cursor: "pointer",
+    fontFamily: "inherit",
+    fontSize: 13,
+  },
+  resultGlyph: {
+    flex: "0 0 26px",
+    color: reader.accent,
+    fontFamily: reader.mono,
+    fontSize: 11,
+  },
+  resultName: { fontWeight: 500, flex: "0 0 auto" },
+  resultQualified: {
+    color: reader.ink3,
+    fontSize: 11.5,
+    fontFamily: reader.mono,
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
+    flex: "1 1 auto",
   },
-  depthRow: { display: "flex", alignItems: "center", gap: 6, marginTop: 12, flexWrap: "wrap" },
-  depth: {
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-    border: "1px solid var(--border, #e4e4e7)",
+  resultWhere: {
+    marginLeft: "auto",
+    color: reader.ink4,
+    fontSize: 11,
+    fontFamily: reader.mono,
+    flex: "0 0 auto",
+  },
+  emptyState: { maxWidth: 560, padding: "56px 32px" },
+  emptyTitle: { margin: "0 0 8px", fontSize: 20, fontWeight: 600, letterSpacing: -0.3 },
+  emptyBody: { margin: "0 0 10px", color: reader.ink2, lineHeight: 1.55 },
+  sourceWrap: { padding: "12px 16px 0" },
+  sourceHead: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: 8,
+    flexWrap: "wrap",
+    paddingBottom: 8,
+    borderBottom: `1px solid ${reader.ruleFaint}`,
+    marginBottom: 10,
+  },
+  sourceName: { fontSize: 15, fontWeight: 600 },
+  sourceKind: {
+    fontSize: 11,
+    color: reader.ink3,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  sourcePath: { marginLeft: "auto", fontFamily: reader.mono, fontSize: 11.5, color: reader.ink3 },
+  code: {
+    fontFamily: reader.mono,
+    fontSize: 12.5,
+    lineHeight: "20px",
+    background: reader.paper,
+    border: `1px solid ${reader.ruleFaint}`,
+    borderRadius: 4,
+    overflowX: "auto",
+  },
+  codeLine: { display: "flex", gap: 0, paddingRight: 10 },
+  codeLineCalling: {
+    display: "flex",
+    gap: 0,
+    paddingRight: 10,
+    background: reader.accentSoft,
+    boxShadow: `inset 2px 0 0 ${reader.accentLine}`,
+  },
+  gutter: {
+    flex: "0 0 46px",
+    textAlign: "right",
+    paddingRight: 10,
+    color: reader.ink4,
+    userSelect: "none",
+  },
+  codeText: { whiteSpace: "pre", flex: "1 1 auto" },
+  aligned: { marginTop: 18 },
+  alignedTitle: {
+    margin: "0 0 6px",
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: reader.ink3,
+  },
+  alignedList: { listStyle: "none", margin: 0, padding: 0 },
+  alignedRow: { display: "flex", alignItems: "baseline", gap: 8, padding: "2px 0" },
+  alignedLine: {
+    flex: "0 0 56px",
+    textAlign: "right",
+    fontFamily: reader.mono,
+    fontSize: 11,
+    color: reader.ink4,
+  },
+  alignedLink: {
+    color: reader.accent,
+    textDecoration: "none",
+    fontWeight: 500,
+    fontFamily: reader.mono,
+    fontSize: 12.5,
+  },
+  alignedWhere: { color: reader.ink4, fontSize: 11, fontFamily: reader.mono },
+  callRow: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 1,
+    width: "100%",
+    textAlign: "left",
+    padding: "5px 8px",
+    border: "none",
+    borderRadius: 4,
     background: "transparent",
     color: "inherit",
     cursor: "pointer",
     fontFamily: "inherit",
-    fontSize: 12,
   },
-  depthActive: {
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-    border: "1px solid var(--accent, #2563eb)",
-    background: "var(--accent, #2563eb)",
-    color: "#ffffff",
+  callName: { fontSize: 12.5, fontWeight: 500, fontFamily: reader.mono },
+  callWhere: { fontSize: 10.5, color: reader.ink4, fontFamily: reader.mono },
+  callKind: {
+    fontSize: 10,
+    color: reader.accent,
+    fontFamily: reader.mono,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  trail: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "7px 14px",
+    borderTop: `1px solid ${reader.ruleFaint}`,
+    background: reader.paper2,
+    flexWrap: "wrap",
+  },
+  trailLabel: {
+    fontSize: 10.5,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: reader.ink3,
+    fontWeight: 600,
+  },
+  trailCode: { fontFamily: reader.mono, fontSize: 11.5, color: reader.ink2 },
+  trailButton: {
+    marginLeft: "auto",
+    padding: "4px 10px",
+    borderRadius: 4,
+    border: `1px solid ${reader.rule}`,
+    background: reader.paper,
+    color: reader.ink,
     cursor: "pointer",
     fontFamily: "inherit",
     fontSize: 12,
   },
-  graphWrap: {
-    border: "1px solid var(--border, #e4e4e7)",
-    borderRadius: 10,
-    padding: 12,
-    background: "var(--card, transparent)",
-  },
-  legend: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", fontSize: 11, marginBottom: 8 },
-  legendItem: { display: "inline-flex", alignItems: "center", gap: 5, color: "var(--muted-foreground, #71717a)" },
-  legendSwatch: { width: 14, height: 2, borderRadius: 1, display: "inline-block" },
-  legendTruncated: { color: "var(--destructive, #dc2626)" },
-  scroller: {
-    overflow: "auto",
-    maxHeight: "60vh",
-    border: "1px solid var(--border, #e4e4e7)",
-    borderRadius: 8,
-    background: "var(--background, transparent)",
-  },
-  svg: { display: "block" },
-  code: {
-    margin: 0,
-    padding: 10,
-    borderRadius: 8,
-    border: "1px solid var(--border, #e4e4e7)",
-    background: "var(--code-bg-resolved, rgba(0,0,0,0.04))",
-    fontSize: 11.5,
-    lineHeight: 1.5,
-    overflowX: "auto",
-    maxHeight: "40vh",
-    whiteSpace: "pre",
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-  },
+  dim: { color: reader.ink3, fontSize: 12, margin: "6px 0" },
+  error: { color: reader.accent, fontSize: 12, margin: "6px 0" },
 };

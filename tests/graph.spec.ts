@@ -27,7 +27,8 @@ function makeIndex(options: { nodes?: boolean; columns?: boolean } = {}) {
       id TEXT PRIMARY KEY, kind TEXT, name TEXT, qualified_name TEXT,
       file_path TEXT, language TEXT, start_line INTEGER, end_line INTEGER)`);
     db.exec(`CREATE TABLE edges (
-      id TEXT PRIMARY KEY, source TEXT, target TEXT, kind TEXT, provenance TEXT)`);
+      id TEXT PRIMARY KEY, source TEXT, target TEXT, kind TEXT, provenance TEXT,
+      line INTEGER, col INTEGER)`);
   }
   if (options.nodes !== false) {
     const insertNode = db.prepare(
@@ -39,11 +40,13 @@ function makeIndex(options: { nodes?: boolean; columns?: boolean } = {}) {
     insertNode.run("n3", "function", "route", "api.route", "src/routes.ts", "ts", 1, 9);
     insertNode.run("n4", "function", "saveOrder", "db.saveOrder", "src/db.ts", "ts", 50, 60);
     insertNode.run("n5", "class", "OrderService", "order.OrderService", "src/service.ts", "ts", 1, 100);
-    const insertEdge = db.prepare("INSERT INTO edges VALUES (?,?,?,?,?)");
-    insertEdge.run("e1", "n2", "n1", "calls", "static");
-    insertEdge.run("e2", "n3", "n2", "calls", "static");
-    insertEdge.run("e3", "n1", "n4", "calls", "static");
-    insertEdge.run("e4", "n1", "n5", "references", "static");
+    // Call edges carry the line that makes the call, which is what lets the
+    // reader align a callee with its source; `references` edges do not.
+    const insertEdge = db.prepare("INSERT INTO edges VALUES (?,?,?,?,?,?,?)");
+    insertEdge.run("e1", "n2", "n1", "calls", "static", 12, 4);
+    insertEdge.run("e2", "n3", "n2", "calls", "static", 7, 2);
+    insertEdge.run("e3", "n1", "n4", "calls", "static", 30, 6);
+    insertEdge.run("e4", "n1", "n5", "references", "static", null, null);
   }
   db.close();
   return root;
@@ -97,8 +100,21 @@ describe("neighbourhood", () => {
     const graph = neighbourhood(root, "n1", 1);
     const caller = graph.edges.find((e) => e.source === "n2");
     const callee = graph.edges.find((e) => e.target === "n4");
-    expect(caller).toEqual({ source: "n2", target: "n1", kind: "calls" });
-    expect(callee).toEqual({ source: "n1", target: "n4", kind: "calls" });
+    expect(caller).toEqual({ source: "n2", target: "n1", kind: "calls", line: 12 });
+    expect(callee).toEqual({ source: "n1", target: "n4", kind: "calls", line: 30 });
+  });
+
+  it("carries the line that makes each call, and null when the index has none", () => {
+    // `line` is what aligns a callee with its source in the reader, and
+    // `references` edges in a real index carry no line — so null is a real case
+    // here, not a placeholder.
+    const root = makeIndex();
+    const graph = neighbourhood(root, "n1", 1);
+    const reference = graph.edges.find((e) => e.kind === "references");
+    expect(reference?.line).toBeNull();
+    for (const edge of graph.edges.filter((e) => e.kind === "calls")) {
+      expect(typeof edge.line).toBe("number");
+    }
   });
 
   it("walks further with depth and finds the grandparent caller", () => {
@@ -157,10 +173,10 @@ describe("neighbourhood", () => {
     // A star: one hub with more leaves than the ceiling allows.
     const db = new DatabaseSync(path.join(root, ".codegraph", "codegraph.db"));
     const insertNode = db.prepare("INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?)");
-    const insertEdge = db.prepare("INSERT INTO edges VALUES (?,?,?,?,?)");
+    const insertEdge = db.prepare("INSERT INTO edges VALUES (?,?,?,?,?,?,?)");
     for (let i = 0; i < MAX_GRAPH_NODES + 40; i += 1) {
       insertNode.run(`leaf${i}`, "function", `leaf${i}`, `x.leaf${i}`, "src/x.ts", "ts", 1, 2);
-      insertEdge.run(`ex${i}`, "n1", `leaf${i}`, "calls", "static");
+      insertEdge.run(`ex${i}`, "n1", `leaf${i}`, "calls", "static", 40 + i, 1);
     }
     db.close();
     const graph = neighbourhood(root, "n1", 1);
