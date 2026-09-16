@@ -8,6 +8,7 @@ import {
   gitIdentity,
   indexRoot,
   isGitRepository,
+  redactRemoteUrl,
   repoNameFromRemoteUrl,
   type CommandRunner,
 } from "../src/git/identity.js";
@@ -197,5 +198,47 @@ describe("isGitRepository", () => {
   it("returns false when .git is unreadable rather than throwing", async () => {
     // A stat failure must not take down the listing that called it.
     await expect(isGitRepository("/proc/1/fd/not-a-real-path")).resolves.toBe(false);
+  });
+});
+
+describe("redactRemoteUrl — a clone URL can carry a token", () => {
+  it("strips a password from an https remote", () => {
+    // The real case this exists for: GitLab hands out clone URLs with a PAT in
+    // them, and this plugin reads that URL to label a repository.
+    expect(redactRemoteUrl("https://oauth2:glpat-EXAMPLEtoken123@git.example.com/group/repo.git")).toBe(
+      "https://***@git.example.com/group/repo.git",
+    );
+  });
+
+  it("keeps the user so the label still says whose checkout it is", () => {
+    expect(redactRemoteUrl("https://deploy:secret@host/x/y.git")).toBe("https://***@host/x/y.git");
+  });
+
+  it("leaves a URL with no credentials alone", () => {
+    for (const url of [
+      "https://github.com/conreo/paperclip-codegraph.git",
+      "git@github.com:conreo/repo.git",
+      "ssh://git@github.com/conreo/repo.git",
+      "/srv/git/pos.git",
+    ]) {
+      expect(redactRemoteUrl(url), url).toBe(url);
+    }
+  });
+
+  it("strips the scp form too, which has no scheme to anchor on", () => {
+    expect(redactRemoteUrl("oauth2:glpat-EXAMPLE@git.example.com:group/repo.git")).toBe(
+      "***@git.example.com:group/repo.git",
+    );
+  });
+
+  it("never leaves the token in the string", () => {
+    const secret = "glpat-EXAMPLEtoken123";
+    for (const url of [
+      `https://oauth2:${secret}@h/g/r.git`,
+      `http://u:${secret}@h/g/r.git`,
+      `oauth2:${secret}@h:g/r.git`,
+    ]) {
+      expect(redactRemoteUrl(url)).not.toContain(secret);
+    }
   });
 });

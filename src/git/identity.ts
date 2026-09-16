@@ -55,9 +55,35 @@ export const NO_GIT_IDENTITY: GitIdentity = { root: null, name: null, url: null 
  * path. Returns null for anything it cannot read a name out of, so the caller
  * falls back to the folder rather than showing a mangled string.
  */
+/**
+ * Strip credentials out of a remote URL.
+ *
+ * A clone URL can carry a token — `https://oauth2:glpat-…@host/group/repo.git` is
+ * what GitLab hands out, and it is common in CI-provisioned checkouts. This plugin
+ * reads that URL to label a repository, and a label is rendered, logged and put in
+ * an audit row, so the credential must not survive the read.
+ *
+ * Applied before anything else touches the URL, so the name derived from it cannot
+ * carry a token either.
+ */
+export function redactRemoteUrl(url: string): string {
+  // Only a `user:secret@` authority is redacted. A bare `user@` carries no secret
+  // — `ssh://git@github.com/…` is the ordinary SSH form, and masking `git` there
+  // would be destroying information rather than protecting any.
+  if (url.includes("://")) {
+    return url.replace(
+      /^([a-z][a-z0-9+.-]*:\/\/)[^/@\s:]+:[^/@\s]+@/i,
+      "$1***@",
+    );
+  }
+  // The scp form has no scheme to anchor on, so anchor on the colon instead.
+  return url.replace(/^[^/@\s:]+:[^/@\s]+@/, "***@");
+}
+
 export function repoNameFromRemoteUrl(url: string | null | undefined): string | null {
   if (typeof url !== "string") return null;
-  const trimmed = url.trim();
+  // Redacted first: a credential must not reach the name this returns.
+  const trimmed = redactRemoteUrl(url.trim());
   if (trimmed.length === 0) return null;
 
   // `scp`-style shorthand has no scheme, so it needs handling before URL parsing.
@@ -104,8 +130,11 @@ export async function gitIdentity(
   const root = await git(run, workspacePath, ["rev-parse", "--show-toplevel"]);
   if (!root) return NO_GIT_IDENTITY;
 
-  const url = await git(run, workspacePath, ["remote", "get-url", "origin"]);
-  return { root, name: repoNameFromRemoteUrl(url), url };
+  const rawUrl = await git(run, workspacePath, ["remote", "get-url", "origin"]);
+  // Redacted at the boundary: `url` is returned to callers that render it, and a
+  // token in a clone URL must not travel any further than this line.
+  const url = rawUrl === null ? null : redactRemoteUrl(rawUrl);
+  return { root, name: repoNameFromRemoteUrl(rawUrl), url };
 }
 
 /**
