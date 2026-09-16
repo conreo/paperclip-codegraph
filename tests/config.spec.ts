@@ -117,9 +117,47 @@ describe("INSTANCE_CONFIG_SCHEMA", () => {
     expect(INSTANCE_CONFIG_SCHEMA["additionalProperties"]).toBe(false);
   });
 
-  it("covers every RuntimeConfig field", () => {
-    for (const key of Object.keys(DEFAULT_RUNTIME_CONFIG)) {
-      expect(properties).toHaveProperty(key);
+  /**
+   * Deliberately a curated subset, asserted rather than derived.
+   *
+   * The server validates saved config with Ajv against this object and
+   * `properties` is closed, so a key absent here is unreachable from the UI and
+   * the API and always takes its code default. Growing this list means taking a
+   * decision away from those defaults, so it should be a conscious edit.
+   */
+  it("exposes only the curated operator surface", () => {
+    expect(Object.keys(properties).sort()).toEqual([
+      "allowedProjectRoots",
+      "autoIndex",
+      "autoInstall",
+      "codegraphCommand",
+      "enabled",
+    ]);
+  });
+
+  it("gives every exposed field a default, so the page renders pre-filled", () => {
+    for (const [key, schema] of Object.entries(properties)) {
+      expect(schema["default"], `${key} needs a default`).toBeDefined();
+    }
+  });
+
+  it("still parses keys that are no longer exposed", () => {
+    // Not reachable through the API today, but the runtime still understands
+    // them, so re-exposing one is a schema-only change rather than a code
+    // change. This test exists so that stays true.
+    const config = normalizeConfig({
+      codegraphArgs: ["serve", "--mcp", "--no-watch"],
+      callTimeoutMs: 5_000,
+      useDaemon: true,
+    });
+    expect(config.codegraphArgs).toEqual(["serve", "--mcp", "--no-watch"]);
+    expect(config.callTimeoutMs).toBe(5_000);
+    expect(config.useDaemon).toBe(true);
+  });
+
+  it("keeps a defined default for every runtime field, exposed or not", () => {
+    for (const [key, value] of Object.entries(DEFAULT_RUNTIME_CONFIG)) {
+      expect(value, `${key} needs a default`).toBeDefined();
     }
   });
 

@@ -37,134 +37,67 @@ export const INSTANCE_CONFIG_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
   properties: {
+    // ---------------------------------------------------------------------
+    // The five an operator actually sets, in the order they should read them.
+    //
+    // Everything else this plugin understands is a code default. The server
+    // validates saved config with Ajv against THIS object and `properties` is
+    // closed, so a key omitted here is not settable at all — which is the
+    // point: `startupTimeoutMs`, `extraEnv`, `useDaemon` and friends are
+    // internal tuning, and exposing them turned a five-decision page into a
+    // seventeen-field wall of prose.
+    //
+    // `title` is the label; `description` is the supporting line. Both are kept
+    // short, because some renderers show the description in place of the label.
+    // ---------------------------------------------------------------------
     enabled: {
       type: "boolean",
-      title: "Enable CodeGraph tools",
+      title: "Enable CodeGraph",
       description:
-        "Master switch. When off, no CodeGraph tool is registered for any company and every call is denied.",
+        "Turn CodeGraph tools on for this company. While off, every CodeGraph call is denied.",
       default: false,
     },
-    codegraphCommand: {
-      type: "string",
-      title: "CodeGraph command",
-      description:
-        'Executable used to launch the CodeGraph MCP server. Default "codegraph".',
-      default: DEFAULT_MCP_COMMAND,
-    },
-    codegraphArgs: {
-      type: "array",
-      items: { type: "string" },
-      title: "CodeGraph arguments",
-      description:
-        'Arguments for the MCP server. Default ["serve", "--mcp"].',
-      default: [...DEFAULT_MCP_ARGS],
-    },
-    defaultProjectPath: {
-      type: "string",
-      title: "Default CodeGraph project path",
-      description:
-        "Absolute path to a CodeGraph-indexed repository. Only used for companies that have no governance entry, and only when 'Bind default project to unconfigured companies' is on.",
-    },
-    bindDefaultProjectForUnconfiguredCompanies: {
+    autoInstall: {
       type: "boolean",
-      title: "Bind default project to unconfigured companies",
+      title: "Install CodeGraph automatically",
       description:
-        "Off by default so multi-tenant isolation is the default posture. When on, every company without its own governance entry can read defaultProjectPath.",
+        "Install CodeGraph on the server if it is missing. Off: you must install it yourself.",
+      default: false,
+    },
+    autoIndex: {
+      type: "boolean",
+      title: "Build the index automatically",
+      description:
+        "Index a repository the first time it is queried. Off: run `codegraph init` yourself.",
       default: false,
     },
     allowedProjectRoots: {
       type: "array",
       items: { type: "string" },
-      title: "Allowed project roots",
+      title: "Allowed repository directories",
       description:
-        "If non-empty, every bound project path must live under one of these absolute directories. Strongly recommended in multi-tenant deployments.",
+        "Repositories must live under one of these directories. Recommended whenever more than one company uses this instance.",
       default: [],
     },
-    autoInstall: {
-      type: "boolean",
-      title: "Auto-install the CodeGraph CLI",
-      description:
-        "When the configured command is not found, install @colbymchenry/codegraph globally via npm (version-pinned). Off by default; this runs a package install on the host.",
-      default: false,
-    },
-    codegraphVersion: {
+    codegraphCommand: {
       type: "string",
-      title: "Pinned CodeGraph version for auto-install",
-      description: 'npm version to install when autoInstall runs. Default "1.6.0".',
-      default: "1.6.0",
-    },
-    autoIndex: {
-      type: "boolean",
-      title: "Auto-index projects",
+      title: "CodeGraph executable",
       description:
-        "When a bound project has no .codegraph index, run `codegraph init` on it before the first query. Off by default; indexing is CPU- and disk-intensive.",
-      default: false,
-    },
-    allowTelemetry: {
-      type: "boolean",
-      title: "Allow CodeGraph telemetry and update checks",
-      description:
-        "Off by default, which hard-sets DO_NOT_TRACK=1, CODEGRAPH_TELEMETRY=0 and CODEGRAPH_NO_UPDATE_CHECK=1 on every CodeGraph process so the plugin makes no outbound network calls.",
-      default: false,
-    },
-    useDaemon: {
-      type: "boolean",
-      title: "Use CodeGraph's shared background daemon",
-      description:
-        "Off by default: each scope gets its own direct MCP process, which is the easier isolation story to reason about. Turn on for lower memory and faster first calls in single-tenant setups.",
-      default: false,
-    },
-    callTimeoutMs: {
-      type: "number",
-      title: "Per-call timeout (ms)",
-      description: "How long a single CodeGraph tool call may take.",
-      default: DEFAULT_CALL_TIMEOUT_MS,
-      minimum: 1_000,
-      maximum: 900_000,
-    },
-    indexTimeoutMs: {
-      type: "number",
-      title: "Indexing timeout (ms)",
-      description: "How long `codegraph init` may take.",
-      default: DEFAULT_INDEX_TIMEOUT_MS,
-      minimum: 1_000,
-      maximum: 7_200_000,
-    },
-    startupTimeoutMs: {
-      type: "number",
-      title: "MCP startup timeout (ms)",
-      description: "How long to wait for the CodeGraph MCP handshake.",
-      default: DEFAULT_STARTUP_TIMEOUT_MS,
-      minimum: 1_000,
-      maximum: 300_000,
-    },
-    maxResultChars: {
-      type: "number",
-      title: "Maximum result size (characters)",
-      description:
-        "CodeGraph responses are capped before they reach the agent, so one broad explore call cannot flood a context window.",
-      default: MAX_RESULT_CHARS,
-      minimum: 1_000,
-      maximum: 4_000_000,
-    },
-    extraEnv: {
-      type: "object",
-      title: "Extra environment for CodeGraph",
-      description:
-        "Additional environment entries for the CodeGraph process. Keys that look like credentials are rejected: CodeGraph is local-only and needs none.",
-      additionalProperties: { type: "string" },
-      default: {},
-    },
-    auditProjectPaths: {
-      type: "boolean",
-      title: "Include resolved project paths in audit metadata",
-      description:
-        "Off by default. Audit rows normally carry the operator-chosen project alias; turn this on only if your audit store is trusted with host directory layouts.",
-      default: false,
+        'The CodeGraph command to run. Set an absolute path if it is not on the server PATH. Default "codegraph".',
+      default: DEFAULT_MCP_COMMAND,
     },
   },
 };
 
+/**
+ * The full runtime surface, including the keys deliberately kept out of
+ * {@link INSTANCE_CONFIG_SCHEMA}.
+ *
+ * These are not "unimplemented" — they are settable in code and exercised by
+ * tests, but an operator cannot reach them, so they always take the defaults in
+ * {@link DEFAULT_RUNTIME_CONFIG}. Re-exposing one is a one-line schema change
+ * plus a note here saying why it is worth a field on the page.
+ */
 export interface RuntimeConfig {
   enabled: boolean;
   codegraphCommand: string;

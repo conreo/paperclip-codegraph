@@ -24,7 +24,7 @@ export const STATE_KEY = "profiles";
 export const GOVERNANCE_DOC_VERSION = 1;
 
 /** Manifest version; keep in sync with package.json. */
-export const PLUGIN_VERSION = "0.1.0";
+export const PLUGIN_VERSION = "0.2.0";
 
 /**
  * `projectPath` is deliberately absent from every schema this plugin declares.

@@ -145,24 +145,31 @@ paperclipai plugin config:set paperclip-codegraph -C <companyId> --payload-json 
 }'
 ```
 
+**Five settings are exposed.** They are the ones a normal operator has to decide:
+
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | `false` | Master switch for this company. Every call is denied until it is `true`. |
-| `codegraphCommand` | `codegraph` | Executable to launch the MCP server. Set an absolute path if the server's `PATH` is minimal. |
-| `codegraphArgs` | `["serve","--mcp"]` | Upstream's own launch arguments. |
-| `defaultProjectPath` | unset | Seed path for a company with no governance entry. |
-| `bindDefaultProjectForUnconfiguredCompanies` | `false` | Off, so isolation is the default posture. |
-| `allowedProjectRoots` | `[]` | If non-empty, every bound path must live under one of these. **Recommended.** |
-| `autoInstall` | `false` | Install the pinned CodeGraph CLI via npm if the command is missing. |
-| `codegraphVersion` | `1.6.0` | Version pinned by `autoInstall`. |
-| `autoIndex` | `false` | Run `codegraph init` when a bound project has no index. |
-| `allowTelemetry` | `false` | Off hard-sets `DO_NOT_TRACK=1`, `CODEGRAPH_TELEMETRY=0`, `CODEGRAPH_NO_UPDATE_CHECK=1`, `CODEGRAPH_NO_DOWNLOAD=1` on every CodeGraph process. |
-| `useDaemon` | `false` | Off gives each scope its own direct MCP process. |
-| `callTimeoutMs` | `60000` | Per-call timeout. |
-| `indexTimeoutMs` | `900000` | `codegraph init` timeout. |
-| `maxResultChars` | `400000` | Result clamp. |
-| `extraEnv` | `{}` | Extra environment for CodeGraph. Keys that look like credentials are **rejected**. |
-| `auditProjectPaths` | `false` | Off keeps absolute paths out of audit metadata (aliases are used instead). |
+| `enabled` | `false` | Turn CodeGraph on for this company. While off, every call is denied. |
+| `autoInstall` | `false` | Install CodeGraph on the server if it is missing. |
+| `autoIndex` | `false` | Index a repository the first time it is queried. |
+| `allowedProjectRoots` | `[]` | Repositories must live under one of these. Recommended with more than one company. |
+| `codegraphCommand` | `codegraph` | The executable to run. Set an absolute path if it is not on the server `PATH`. |
+
+Everything else is a **code default an operator cannot reach**: `codegraphArgs`,
+`codegraphVersion`, `useDaemon`, `callTimeoutMs`, `indexTimeoutMs`,
+`startupTimeoutMs`, `maxResultChars`, `extraEnv`, `auditProjectPaths`,
+`defaultProjectPath`, `bindDefaultProjectForUnconfiguredCompanies`.
+
+That is deliberate, not a stub. Paperclip validates saved config with Ajv against
+this schema and the property set is closed, so an unexposed key always takes its
+default — which is why `useDaemon` (a multi-tenant footgun) and the internal
+timeouts are not on the page. The runtime still understands them, so re-exposing
+one is a schema change plus a deliberate test edit rather than new code.
+
+> `defaultProjectPath` and `bindDefaultProjectForUnconfiguredCompanies` being
+> unexposed is what makes isolation the default posture: a company with no
+> governance entry is denied outright rather than falling back to a shared
+> repository.
 
 ### Governance profiles
 
