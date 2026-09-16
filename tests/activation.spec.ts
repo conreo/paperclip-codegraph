@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeActivation,
+  findGateway,
   findProfileId,
   isAlreadyExistsMessage,
   type ActivationSummary,
@@ -104,5 +105,56 @@ describe("findProfileId", () => {
     expect(
       findProfileId({ profiles: [{ id: "p1", profileKey: "codegraph-read-only" }] }, "codegraph-read"),
     ).toBeNull();
+  });
+});
+
+describe("findGateway", () => {
+  it("reads the shape the API actually returns — { gateways: [...] }", () => {
+    // routes/tool-gateway.ts: res.json({ gateways: await listNamedGateways(companyId) })
+    const response = {
+      gateways: [
+        { id: "other", slug: "something-else", profileId: "p-other" },
+        { id: "gw-1", slug: "codegraph", profileId: "cde655fc-e744-4caa-ab24-29edb7ba1372" },
+      ],
+    };
+    expect(findGateway(response, "codegraph")).toEqual({
+      id: "gw-1",
+      profileId: "cde655fc-e744-4caa-ab24-29edb7ba1372",
+    });
+  });
+
+  it("also accepts a bare array and displaySlug", () => {
+    expect(findGateway([{ id: "gw-1", displaySlug: "codegraph" }], "codegraph")).toEqual({
+      id: "gw-1",
+      profileId: null,
+    });
+  });
+
+  it("returns null when absent, so the caller creates one", () => {
+    expect(findGateway({ gateways: [] }, "codegraph")).toBeNull();
+    expect(findGateway({ gateways: [{ id: "x", slug: "other" }] }, "codegraph")).toBeNull();
+  });
+
+  it("returns null rather than throwing on anything unexpected", () => {
+    for (const bad of [null, undefined, 1, "no", {}, { gateways: "no" }, { gateways: [null, 3] }]) {
+      expect(findGateway(bad, "codegraph"), JSON.stringify(bad)).toBeNull();
+    }
+  });
+
+  it("ignores a row with a matching slug but no id", () => {
+    expect(findGateway({ gateways: [{ slug: "codegraph" }] }, "codegraph")).toBeNull();
+  });
+});
+
+describe("describeActivation — a repaired gateway", () => {
+  it("says the gateway was repointed rather than pretending it was fresh", () => {
+    const text = describeActivation({
+      profileId: "p1",
+      profile: "already-existed",
+      binding: "already-existed",
+      gateway: "repointed",
+    });
+    expect(text).toMatch(/repaired/);
+    expect(text).toMatch(/pointed at the current profile/);
   });
 });

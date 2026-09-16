@@ -32,6 +32,7 @@ import {
   GATEWAY_SLUG,
   PROFILE_KEY,
   describeActivation,
+  findGateway,
   findProfileId,
   isAlreadyExistsMessage,
   type ActivationSummary,
@@ -197,12 +198,43 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
 
       // 3. The named MCP gateway. Without one, no agent receives the tools even
       //    with the profile attached and bound.
-      const gateway = await attempt(() =>
-        coreApi(`/api/companies/${companyId}/tools/gateways`, {
-          method: "POST",
-          body: { name: GATEWAY_NAME, slug: GATEWAY_SLUG, profileId },
-        }),
-      );
+      //
+      //    Looked up before creating: `(company_id, slug)` is unique, so a second
+      //    create is rejected — and the message Paperclip returns for that is a
+      //    raw `Failed query: insert into "tool_mcp_gateways" …` carrying none of
+      //    the words a conflict classifier looks for. Looking the gateway up is
+      //    both correct and free of message-parsing.
+      let gateway: StepOutcome;
+      let existingGateway: { id: string; profileId: string | null } | null = null;
+      try {
+        existingGateway = findGateway(
+          await coreApi<unknown>(`/api/companies/${companyId}/tools/gateways`),
+          GATEWAY_SLUG,
+        );
+      } catch {
+        // No permission to list, or a shape we do not recognise: fall through to
+        // creating, which is what the previous version did unconditionally.
+        existingGateway = null;
+      }
+
+      if (!existingGateway) {
+        gateway = await attempt(() =>
+          coreApi(`/api/companies/${companyId}/tools/gateways`, {
+            method: "POST",
+            body: { name: GATEWAY_NAME, slug: GATEWAY_SLUG, profileId },
+          }),
+        );
+      } else if (existingGateway.profileId !== null && existingGateway.profileId !== profileId) {
+        // The gateway exists but points at a different profile — converge it on
+        // the one this plugin owns, rather than leaving a stale pointer.
+        await coreApi(`/api/tool-gateway/gateways/${existingGateway.id}`, {
+          method: "PATCH",
+          body: { companyId, profileId },
+        });
+        gateway = "repointed";
+      } else {
+        gateway = "already-existed";
+      }
 
       const summary: ActivationSummary = {
         profileId,

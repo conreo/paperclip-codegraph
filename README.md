@@ -104,6 +104,28 @@ plugin grants nothing*.
   which Node the CodeGraph CLI is launched from.
 - No database, no network, no credentials. CodeGraph is local-only.
 
+## Upgrading
+
+Paperclip records the installed plugin as a caret range — `"paperclip-codegraph":
+"^0.7.1"` — in `plugins/package.json` inside its own data dir. For a pre-1.0
+package a caret does **not** cross a minor: `^0.6.0` means `>=0.6.0 <0.7.0`.
+
+Two consequences worth knowing before you file a bug:
+
+- **A bare `plugin install paperclip-codegraph` on an already-installed instance
+  is a no-op.** npm sees the pinned range already satisfied, reports "up to date",
+  and never looks at the new release.
+- **Install the version explicitly** to move across a minor:
+
+  ```bash
+  paperclipai plugin install paperclip-codegraph@0.7.2
+  ```
+
+  The installer rewrites the pin, so the range tracks what you last installed.
+
+If `plugin install` reports a version you did not ask for, check
+`<paperclip home>/plugins/package.json` — the pin, not the registry, is deciding.
+
 ## One-command install
 
 ```bash

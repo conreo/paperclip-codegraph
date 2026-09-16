@@ -59,7 +59,46 @@ export function findProfileId(response: unknown, profileKey: string): string | n
 }
 
 /** One step's outcome, so the caller can report what actually happened. */
-export type StepOutcome = "created" | "already-existed";
+export type StepOutcome = "created" | "already-existed" | "repointed";
+
+/**
+ * Find the gateway this plugin owns in a list response.
+ *
+ * Same lesson as `findProfileId`, learned the hard way twice:
+ * `GET /api/companies/:companyId/tools/gateways` answers `{ gateways: [...] }`,
+ * and relying on an error message instead of a lookup is how the gateway step
+ * came to surface a raw `Failed query: insert into "tool_mcp_gateways" …` — the
+ * unique constraint on `(company_id, slug)` rejected the insert, but the message
+ * Paperclip returns for that contains none of the words a conflict classifier
+ * would look for. So: look it up first.
+ */
+export function findGateway(
+  response: unknown,
+  slug: string,
+): { id: string; profileId: string | null } | null {
+  const rows = Array.isArray(response)
+    ? response
+    : typeof response === "object" && response !== null && Array.isArray((response as { gateways?: unknown }).gateways)
+      ? ((response as { gateways: unknown[] }).gateways)
+      : [];
+
+  for (const row of rows) {
+    if (typeof row !== "object" || row === null) continue;
+    const record = row as {
+      id?: unknown;
+      slug?: unknown;
+      displaySlug?: unknown;
+      profileId?: unknown;
+    };
+    const rowSlug = typeof record.slug === "string" ? record.slug : record.displaySlug;
+    if (rowSlug !== slug || typeof record.id !== "string") continue;
+    return {
+      id: record.id,
+      profileId: typeof record.profileId === "string" ? record.profileId : null,
+    };
+  }
+  return null;
+}
 
 export interface ActivationSummary {
   profileId: string;
@@ -79,6 +118,9 @@ export function describeActivation(summary: ActivationSummary): string {
     summary.profile === "already-existed" &&
     summary.binding === "already-existed" &&
     summary.gateway === "already-existed";
+  if (summary.gateway === "repointed") {
+    return "Activated and repaired: the MCP gateway already existed and was pointed at the current profile.";
+  }
   const partial = [summary.profile, summary.binding, summary.gateway].some(
     (step) => step === "created",
   );
