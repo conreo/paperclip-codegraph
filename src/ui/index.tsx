@@ -27,8 +27,6 @@ import {
   type PluginSettingsPageProps,
 } from "@paperclipai/plugin-sdk/ui";
 
-import { mergeGovernance, type RepositoryRow } from "../governance/merge.js";
-import type { CompanyGovernance } from "../governance/types.js";
 
 /** Must match the manifest id; the host namespaces tools with it. */
 const PLUGIN_ID = "paperclip-codegraph";
@@ -64,23 +62,6 @@ interface Readiness {
   repository: { configured: boolean; key: string | null; indexed: boolean; alias: string | null };
 }
 
-interface GovernanceSummary {
-  companies: Record<
-    string,
-    {
-      enabled: boolean;
-      defaultProjectKey: string | null;
-      projectKeys: string[];
-      agentOverrides: string[];
-    }
-  >;
-}
-
-interface AgentRow {
-  id: string;
-  name: string;
-}
-
 /** One credentialed call to the host's own API, as the signed-in board member. */
 async function coreApi<T>(
   path: string,
@@ -114,102 +95,20 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
 
   const { data: readiness, loading: readinessLoading, error: readinessError } =
     usePluginData<Readiness>("readiness");
-  const { data: agentsData } = usePluginData<{ agents: AgentRow[] }>("agents");
 
-  const getGovernance = usePluginAction("get-governance");
-  const setGovernance = usePluginAction("set-company-governance");
-
-  const [rows, setRows] = useState<RepositoryRow[]>([]);
-  const [removedKeys, setRemovedKeys] = useState<string[]>([]);
-  const [granted, setGranted] = useState<Record<string, boolean>>({});
-  const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
-  const agentList = useMemo(() => agentsData?.agents ?? [], [agentsData]);
-
   /**
-   * Load the company's current governance once.
+   * Create the Paperclip objects that make the tools callable.
    *
-   * The form is seeded from real state rather than starting empty, and Save
-   * re-reads it before merging — so a stale form can never clobber a change
-   * somebody else made in the meantime.
+   * There is deliberately nothing else on this page. There is no repository to
+   * choose and no list of agents to tick, because Paperclip already decides both:
+   * the repository is the workspace of the project an agent is running in, and
+   * which agents may use it follows from who is assigned to that project. Asking
+   * here would be a second, parallel authority that could disagree with the
+   * first — so the page has no configuration at all.
    */
-  useEffect(() => {
-    if (!companyId || loaded || !agentsData) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const result = (await getGovernance({ companyId })) as {
-          governance: CompanyGovernance | null;
-        };
-        if (cancelled) return;
-        const current = result?.governance ?? null;
-        setRows(
-          Object.values(current?.projects ?? {}).map((binding) => ({
-            key: binding.projectKey,
-            path: binding.path,
-          })),
-        );
-        const overrides = current?.agents ?? {};
-        const hasOverrides = Object.keys(overrides).length > 0;
-        const seed: Record<string, boolean> = {};
-        for (const agent of agentList) {
-          // A company with no overrides yet grants everybody: this page is an
-          // explicit opt-in, and defaulting to deny-everyone would make a first
-          // run look broken.
-          seed[agent.id] = hasOverrides ? overrides[agent.id]?.enabled !== false : true;
-        }
-        setGranted(seed);
-        setLoaded(true);
-      } catch (error) {
-        if (!cancelled) {
-          setMessage({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [agentList, agentsData, companyId, getGovernance, loaded]);
-
-  const save = useCallback(async () => {
-    if (!companyId) return;
-    setBusy("saving");
-    setMessage(null);
-    try {
-      // Re-read, then merge. The merge is the only thing allowed to decide what
-      // disappears, and it deletes nothing the operator did not remove.
-      const result = (await getGovernance({ companyId })) as {
-        governance: CompanyGovernance | null;
-      };
-      const merged = mergeGovernance(
-        result?.governance ?? null,
-        {
-          repositories: rows,
-          removedRepositoryKeys: removedKeys,
-          grantedAgentIds: agentList.filter((agent) => granted[agent.id]).map((a) => a.id),
-          listedAgentIds: agentList.map((a) => a.id),
-        },
-        { defaultAllowedTools: READ_ONLY_TOOL_NAMES },
-      );
-      await setGovernance({ companyId, governance: merged });
-      setRemovedKeys([]);
-      setMessage({ kind: "ok", text: "Saved. Click Activate to grant the tools to Paperclip." });
-    } catch (error) {
-      setMessage({
-        kind: "error",
-        text: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setBusy(null);
-    }
-  }, [agentList, companyId, getGovernance, granted, removedKeys, rows, setGovernance]);
-
-  /** Create the Paperclip objects that make the tools callable. */
   const activate = useCallback(async () => {
     if (!companyId) return;
     setBusy("activate");
@@ -237,9 +136,7 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
       // Bound at COMPANY scope on purpose. Paperclip keeps only the narrowest
       // matching binding tier (narrowestScopeBindings), so an agent-scoped
       // binding would silently stop the company profile applying to that agent —
-      // granting CodeGraph could revoke their other tools. Per-agent restriction
-      // is done in the plugin's own governance above, which narrows without
-      // replacing.
+      // granting CodeGraph could revoke their other tools.
       await coreApi(`/api/companies/${companyId}/tools/profiles/${profile.id}/bind`, {
         method: "POST",
         body: { targetType: "company", targetId: companyId, priority: 100 },
@@ -252,7 +149,7 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
 
       setMessage({
         kind: "ok",
-        text: "Activated. Agents on CodeGraph now receive the tools on their next run.",
+        text: "Activated. Agents working in a Paperclip project now have CodeGraph for that project's repository.",
       });
     } catch (error) {
       setMessage({
@@ -272,7 +169,9 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
     <div style={styles.page}>
       <h2 style={styles.h2}>CodeGraph</h2>
       <p style={styles.muted}>
-        Code intelligence for this company&apos;s agents, scoped to the repositories you choose.
+        Code intelligence for this company&apos;s agents. An agent gets CodeGraph for the
+        repository of the Paperclip project it is working in — there is nothing to
+        configure here.
       </p>
 
       <section style={styles.card}>
@@ -293,106 +192,24 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
               good={`CodeGraph ${readiness.codegraph.version ?? ""} found`}
               bad={readiness.codegraph.detail}
             />
-            {readiness.folder.configured || readiness.folder.required ? (
-              <StatusLine
-                ok={readiness.folder.configured}
-                good={`Repositories directory: ${readiness.folder.alias ?? ""}`}
-                bad='Repositories are named relative to a directory that is not set — open the "Repositories directory" setting above, or give absolute paths below'
-              />
-            ) : null}
             <StatusLine
               ok={readiness.repository.indexed}
               good={`Repository "${readiness.repository.alias ?? ""}" is indexed`}
               bad={
                 readiness.repository.configured
-                  ? `Repository "${readiness.repository.alias ?? ""}" is not indexed yet — enable "Build the index automatically" above, or run codegraph init`
-                  : "No repository bound yet — add one below"
+                  ? `Repository "${readiness.repository.alias ?? ""}" is not indexed yet — enable "Build the index automatically" above, or use Index now`
+                  : "No repository yet. One appears once an agent runs in a Paperclip project."
               }
             />
+            {readiness.folder.required ? (
+              <StatusLine
+                ok={readiness.folder.configured}
+                good={`Repositories directory: ${readiness.folder.alias ?? ""}`}
+                bad='A repository is configured by relative path but no "Repositories directory" is set'
+              />
+            ) : null}
           </ul>
         ) : null}
-      </section>
-
-      <section style={styles.card}>
-        <h3 style={styles.h3}>Repositories</h3>
-        <p style={styles.muted}>
-          Every repository this company may read. A bare name is resolved inside your
-          repositories directory; an absolute path is used as given.
-        </p>
-        {rows.length === 0 ? (
-          <p style={styles.muted}>None yet.</p>
-        ) : (
-          rows.map((row, index) => (
-            <div key={`${row.key}-${index}`} style={styles.repoRow}>
-              <input
-                style={styles.input}
-                value={row.path}
-                aria-label="Repository"
-                placeholder="pos"
-                onChange={(event) => {
-                  const path = event.target.value;
-                  setRows((current) =>
-                    current.map((entry, i) =>
-                      i === index ? { key: path.trim() || entry.key, path } : entry,
-                    ),
-                  );
-                }}
-              />
-              <button
-                style={styles.iconButton}
-                aria-label={`Remove ${row.path || "repository"}`}
-                onClick={() => {
-                  setRemovedKeys((current) => [...current, row.key]);
-                  setRows((current) => current.filter((_, i) => i !== index));
-                }}
-              >
-                Remove
-              </button>
-            </div>
-          ))
-        )}
-        <button
-          style={{ ...styles.button, marginTop: 8 }}
-          onClick={() => setRows((current) => [...current, { key: "", path: "" }])}
-        >
-          Add repository
-        </button>
-      </section>
-
-      <section style={styles.card}>
-        <h3 style={styles.h3}>Who may use it</h3>
-        <p style={styles.muted}>
-          Tick the agents that may call CodeGraph for this company. Unticked agents are
-          denied; tie-breaks and other agents&apos; settings are left untouched.
-        </p>
-        {agentList.length > 0 ? (
-          <ul style={styles.list}>
-            {agentList.map((agent) => (
-              <li key={agent.id} style={styles.checkRow}>
-                <label style={styles.checkLabel}>
-                  <input
-                    type="checkbox"
-                    checked={granted[agent.id] ?? false}
-                    onChange={(event) =>
-                      setGranted((current) => ({ ...current, [agent.id]: event.target.checked }))
-                    }
-                  />
-                  {agent.name}
-                </label>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p style={styles.muted}>No agents in this company yet.</p>
-        )}
-        <div style={styles.row}>
-          <button style={styles.button} disabled={busy !== null} onClick={() => void save()}>
-            {busy === "saving" ? "Saving…" : "Save"}
-          </button>
-          <span style={styles.muted}>
-            Saving never clears a tool denial or another repository.
-          </span>
-        </div>
       </section>
 
       <section style={styles.card}>
