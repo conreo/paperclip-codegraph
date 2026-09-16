@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import {
   NO_GIT_IDENTITY,
   gitIdentity,
   indexRoot,
+  isGitRepository,
   repoNameFromRemoteUrl,
   type CommandRunner,
 } from "../src/git/identity.js";
@@ -155,5 +159,43 @@ describe("indexRoot", () => {
     const { root, identity } = await indexRoot("/srv/plain", run);
     expect(root).toBe("/srv/plain");
     expect(identity).toEqual(NO_GIT_IDENTITY);
+  });
+});
+
+describe("isGitRepository", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "pcg-isrepo-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("recognises a normal clone, where .git is a directory", () => {
+    fs.mkdirSync(path.join(root, ".git"));
+    return expect(isGitRepository(root)).resolves.toBe(true);
+  });
+
+  it("recognises a linked worktree, where .git is a file", async () => {
+    // `git worktree add` writes a `.git` *file* pointing at the real git dir,
+    // so a directory-only check would misread every linked worktree.
+    fs.writeFileSync(path.join(root, ".git"), "gitdir: /srv/main/.git/worktrees/wt\n");
+    await expect(isGitRepository(root)).resolves.toBe(true);
+  });
+
+  it("returns false for a plain directory", async () => {
+    // The case that put "Onboarding — not indexed yet" in the repository list.
+    await expect(isGitRepository(root)).resolves.toBe(false);
+  });
+
+  it("returns false for a directory that does not exist", async () => {
+    await expect(isGitRepository(path.join(root, "nope"))).resolves.toBe(false);
+  });
+
+  it("returns false when .git is unreadable rather than throwing", async () => {
+    // A stat failure must not take down the listing that called it.
+    await expect(isGitRepository("/proc/1/fd/not-a-real-path")).resolves.toBe(false);
   });
 });

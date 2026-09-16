@@ -140,6 +140,13 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
   const { data: readiness, loading: readinessLoading, error: readinessError } =
     usePluginData<Readiness>("readiness");
 
+  // The org's name, so the page says whose code it configures. Falls back to the
+  // URL prefix, which is the only identity the host context carries.
+  const { data: overview } = usePluginData<{ organization?: string | null }>("graph-projects", {
+    companyId,
+  });
+  const organization = overview?.organization ?? null;
+
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
@@ -270,10 +277,12 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
 
   return (
     <div style={styles.page}>
-      <h2 style={styles.h2}>CodeGraph</h2>
+      <h2 style={styles.h2}>
+        CodeGraph{organization ? ` · ${organization}` : context.companyPrefix ? ` · ${context.companyPrefix}` : ""}
+      </h2>
       <p style={styles.muted}>
-        Code intelligence for this company&apos;s agents. An agent gets CodeGraph for the
-        repository of the Paperclip project it is working in.
+        Code intelligence for this organization&apos;s agents. An agent gets CodeGraph for
+        the repository of the Paperclip project it is working in.
       </p>
 
       <section style={styles.card}>
@@ -519,14 +528,14 @@ function Configuration({
 
       <div style={styles.field}>
         <label style={styles.fieldLabel} htmlFor="codegraph-roots">
-          Allowed repository directories
+          Safety boundary: directories CodeGraph may read
         </label>
         <textarea
           id="codegraph-roots"
           style={styles.textarea}
           rows={3}
           value={draft.allowedProjectRoots.join("\n")}
-          placeholder="/srv/repos"
+          placeholder="Leave empty unless more than one organization shares this server"
           onChange={(event) =>
             setDraft({
               ...draft,
@@ -541,8 +550,20 @@ function Configuration({
           }
         />
         <p style={styles.hint}>
-          One path per line. Repositories must live under one of these. Recommended whenever
-          more than one company uses this instance — {bound}.
+          <strong>What it is:</strong> a ceiling on where this plugin may look for code on
+          the server. Any repository outside these directories is refused, even if an agent
+          is working in it. It is not a list of repositories — those are detected from
+          Paperclip projects, and there is nothing to add here for them.
+        </p>
+        <p style={styles.hint}>
+          <strong>Why it exists:</strong> the plugin runs on the Paperclip host and can read
+          files. With the box empty it will read whichever repository a project points at,
+          anywhere on the disk. Setting one directory per tenant keeps one organization&apos;s
+          CodeGraph from reaching another&apos;s code — {bound}.
+        </p>
+        <p style={styles.hint}>
+          <strong>When to set it:</strong> if more than one organization shares this Paperclip
+          instance. On a single-tenant instance, leave it empty.
         </p>
       </div>
 
@@ -683,10 +704,12 @@ function RepositoryAccess({
   companyId: string;
   onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
 }) {
-  const { data, loading, refresh } = usePluginData<{ repositories: RepoRow[] }>(
-    "graph-projects",
-    { companyId },
-  );
+  const { data, loading, refresh } = usePluginData<{
+    organization?: string | null;
+    repositories: RepoRow[];
+    skippedProjects?: number;
+    detail?: string;
+  }>("graph-projects", { companyId });
   const setRepositoryAccess = usePluginAction("set-repository-access");
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -715,20 +738,22 @@ function RepositoryAccess({
     [companyId, onMessage, refresh, setRepositoryAccess],
   );
 
+  const skipped = data?.skippedProjects ?? 0;
+
   return (
     <section style={styles.card}>
       <h3 style={styles.h3}>Repositories</h3>
       <p style={styles.muted}>
-        Availability follows the Paperclip project an agent is working in, so this is set
-        per repository rather than per agent. Switching one off is the one edit here, and
-        it can only narrow.
+        The repositories this organization may read. Availability follows the Paperclip
+        project an agent is working in, so it is set per repository rather than per agent:
+        switching one off is the one edit here, and it can only narrow.
       </p>
       {loading && repositories.length === 0 ? (
         <p style={styles.muted}>Loading…</p>
       ) : repositories.length === 0 ? (
         <p style={styles.muted}>
-          No repositories yet. One appears once a project in this company has a repository
-          workspace.
+          {data?.detail ??
+            "No repositories yet. One appears once a project in this company has a repository workspace."}
         </p>
       ) : (
         <ul style={styles.list}>
@@ -756,6 +781,13 @@ function RepositoryAccess({
           ))}
         </ul>
       )}
+      {skipped > 0 ? (
+        <p style={styles.hint}>
+          {skipped} other project{skipped === 1 ? "" : "s"} in this organization {skipped === 1 ? "is" : "are"}{" "}
+          not listed: {skipped === 1 ? "it has" : "they have"} no repository workspace, so there is
+          nothing for CodeGraph to read.
+        </p>
+      ) : null}
     </section>
   );
 }

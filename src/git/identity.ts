@@ -26,6 +26,9 @@
  * refusing to draw a graph over.
  */
 
+import fs from "node:fs/promises";
+import path from "node:path";
+
 /** Runs a command in a directory and returns stdout. Injected so this is testable. */
 export type CommandRunner = (
   command: string,
@@ -103,6 +106,23 @@ export async function gitIdentity(
 
   const url = await git(run, workspacePath, ["remote", "get-url", "origin"]);
   return { root, name: repoNameFromRemoteUrl(url), url };
+}
+
+/**
+ * Whether a directory is a git working tree.
+ *
+ * A cheap `stat` rather than a `git` invocation: `.git` is a directory in a
+ * normal clone and a *file* in a linked worktree or submodule, so both count.
+ * Used only to exclude non-repository workspaces from the list, so a false
+ * negative costs a missing row rather than a wrong answer.
+ */
+export async function isGitRepository(root: string): Promise<boolean> {
+  try {
+    await fs.stat(path.join(root, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

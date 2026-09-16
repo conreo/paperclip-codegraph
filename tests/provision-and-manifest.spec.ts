@@ -102,11 +102,15 @@ describe("manifest", () => {
     }
   });
 
-  it("declares no capabilities it does not use", () => {
-    // Least privilege: every capability must map to a host call the plugin makes.
-    // `companies.read` was declared and never used. `projects.read` is used again
-    // by the sidebar's repositories handler, which lists this org's projects.
-    expect(manifest.capabilities).not.toContain("companies.read");
+  it("declares the capabilities its handlers actually call", () => {
+    // Least privilege, checked in both directions: every capability maps to a
+    // host call, and every host call has its capability.
+    //
+    // `companies.read` was removed as unused, then came back deliberately: the
+    // graph-projects handler calls `companies.get` for the org's display name so
+    // the surfaces can say whose code they are showing. `projects.read` covers
+    // the project listings that back the repository selector.
+    expect(manifest.capabilities).toContain("companies.read");
     expect(manifest.capabilities).toContain("projects.read");
   });
 

@@ -90,11 +90,13 @@ export function CodeGraphPage({ context }: PluginPageProps) {
   const companyId = context.companyId ?? null;
 
   const { data: reposData, loading: reposLoading } = usePluginData<{
+    organization?: string | null;
     repositories: RepoRow[];
     enabled?: boolean;
   }>("graph-projects", { companyId });
 
   const repositories = reposData?.repositories ?? [];
+  const organization = reposData?.organization ?? null;
 
   const [projectId, setProjectId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -170,9 +172,8 @@ export function CodeGraphPage({ context }: PluginPageProps) {
     return (
       <Shell>
         <p style={styles.muted}>
-          This org has no projects with a readable repository workspace, so there is no
-          graph to draw. Add a repository to a project in Paperclip, or index a repository
-          and it will appear here.
+          This organization has no repository workspaces, so there is no graph to draw. A
+          repository appears here once a Paperclip project in this organization has one.
         </p>
       </Shell>
     );
@@ -184,9 +185,12 @@ export function CodeGraphPage({ context }: PluginPageProps) {
     <Shell>
       <header style={styles.header}>
         <div style={styles.headerLeft}>
-          <h2 style={styles.h2}>CodeGraph</h2>
+          <h2 style={styles.h2}>
+            CodeGraph
+            {organization ? ` · ${organization}` : context.companyPrefix ? ` · ${context.companyPrefix}` : ""}
+          </h2>
           <p style={styles.muted}>
-            Who calls what, from the code index. Callers above, callees below.
+            Who calls what in this organization&apos;s code. Callers above, callees below.
           </p>
         </div>
         <div style={styles.headerRight}>

@@ -93,6 +93,7 @@ import { readExcerpt } from "./graph/source.js";
 import {
   NO_GIT_IDENTITY,
   indexRoot,
+  isGitRepository,
   type CommandRunner,
   type GitIdentity,
 } from "./git/identity.js";
@@ -157,6 +158,26 @@ function mcpEnv(config: RuntimeConfig): Record<string, string> {
     allowTelemetry: config.allowTelemetry,
     useDaemon: config.useDaemon,
   });
+}
+
+/**
+ * This company's display name, or null when it cannot be read.
+ *
+ * `companies.get` is namespace-checked by the host, and a failure here must not
+ * take a page down with it: the name is a label, so null means the surfaces
+ * simply omit it. The `companies.read` capability exists for this one call.
+ */
+async function organizationName(
+  ctx: PluginContext,
+  companyId: string,
+): Promise<string | null> {
+  try {
+    const company = await ctx.companies.get(companyId);
+    const name = (company as { name?: unknown } | null)?.name;
+    return typeof name === "string" && name.trim().length > 0 ? name.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -940,6 +961,10 @@ const plugin = definePlugin({
           // project points into a monorepo.
           const { root: indexAt, identity } = await repositoryIdentity(path_);
 
+          // Repositories only, for the same reason as the selector above: a
+          // project with no checkout is not a repository and has nothing to index.
+          if (!workspace?.repoUrl && !(await isGitRepository(indexAt))) continue;
+
           const entry: Record<string, unknown> = {
             projectId: project.id,
             name: project.name ?? identity.name ?? path.basename(path_),
@@ -1005,12 +1030,31 @@ const plugin = definePlugin({
       const store = new GovernanceStore(ctx.state);
       const companyGovernance = await store.getCompany(companyId);
 
+      let skipped = 0;
       for (const project of projects) {
         try {
           const workspace = await ctx.projects.getPrimaryWorkspace(project.id, companyId);
           const resolved = acceptWorkspacePath(workspace?.path, roots);
-          if (!resolved) continue;
+          if (!resolved) {
+            skipped += 1;
+            continue;
+          }
           const { root: indexAt, identity } = await repositoryIdentity(resolved);
+
+          // Only repositories are listed. A Paperclip project can exist with no
+          // code at all — a backlog idea, a cancelled onboarding project — and
+          // its managed folder carries no checkout. Listing those as
+          // "repositories, not indexed" is noise on rows that cannot be acted on.
+          //
+          // Paperclip already knows whether the workspace is a repository
+          // (`repoUrl`), and a bare `git init` with no remote is still a
+          // repository, so the check falls back to `.git` rather than trusting
+          // the URL alone.
+          if (!workspace?.repoUrl && !(await isGitRepository(indexAt))) {
+            skipped += 1;
+            continue;
+          }
+
           repositories.push({
             projectId: project.id,
             name: project.name ?? identity.name ?? path.basename(resolved),
@@ -1026,16 +1070,27 @@ const plugin = definePlugin({
           });
         } catch {
           // A project with no usable workspace is simply not offered.
+          skipped += 1;
         }
       }
 
       return {
+        // The org's own name, so every CodeGraph surface can say whose code it
+        // is showing. The host context carries only `companyPrefix`, and a page
+        // that lists repositories without naming the org makes the operator
+        // check the URL to be sure which company they are editing.
+        organization: await organizationName(ctx, companyId),
         repositories,
         enabled: scoped.enabled,
-        // Indexed first, so the obvious choice is at the top of the selector.
+        // Projects that are not repositories are counted rather than listed, so
+        // "nothing here" is distinguishable from "three projects, none of which
+        // have code".
+        skippedProjects: skipped,
         detail:
           repositories.length === 0
-            ? "This org has no projects with a readable repository workspace."
+            ? projects.length === 0
+              ? "This org has no projects."
+              : `This org has ${projects.length} project(s), none with a repository workspace.`
             : undefined,
       };
     });

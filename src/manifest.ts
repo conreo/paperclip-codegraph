@@ -38,6 +38,9 @@ const manifest: PaperclipPluginManifestV1 = {
     // `companies.read` and `projects.read` were declared and never used: the
     // plugin reads no company and calls no `projects.list`/`projects.get`.
     "project.workspaces.read",
+    // Reads this company's display name for the CodeGraph surfaces, so they can
+    // say whose code they are showing instead of relying on the URL.
+    "companies.read",
     // Lists this org's projects so the sidebar can show its repositories and
     // whether each is indexed.
     "projects.read",
