@@ -50,6 +50,7 @@ import {
   StepsView,
 } from "./views-panels.js";
 import { VIEW_LABELS, VIEW_NOTES, viewFromHash } from "./views.js";
+import { parseSearchIntent } from "./search-intent.js";
 import { readerLayout, showsSidePanes } from "./reader-layout.js";
 
 // ---------------------------------------------------------------------------
@@ -247,6 +248,9 @@ export function CodeGraphPage({ context }: PluginPageProps) {
 
 
   const results = searchData?.results ?? [];
+  // The placeholder offers a question; recognise one so the answer can be honest
+  // rather than "no symbol matches".
+  const intent = useMemo(() => parseSearchIntent(debounced), [debounced]);
   const active = repositories.find((repo) => repo.projectId === projectId) ?? null;
 
   if (!companyId) {
@@ -267,31 +271,13 @@ export function CodeGraphPage({ context }: PluginPageProps) {
 
   return (
     <div ref={layout.ref} style={styles.page}>
+      {/*
+        One toolbar, ordered as the viewer's is: search on the left, then the
+        repository and index state on the right. Search is deliberately the widest
+        thing here — it is the only control used constantly, and the repository
+        changes once a session.
+      */}
       <header style={styles.topbar}>
-        <div style={styles.brand}>
-          <span aria-hidden style={styles.brandMark} />
-          <span style={styles.brandName}>CodeGraph</span>
-          {repositories.length > 1 ? (
-            <select
-              aria-label="Repository"
-              value={projectId ?? ""}
-              onChange={(event) => setProjectId(event.target.value || null)}
-              style={styles.repoSelect}
-            >
-              {repositories.map((repo) => (
-                <option key={repo.projectId} value={repo.projectId}>
-                  {repo.name}
-                  {repo.indexed ? "" : " — not indexed"}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <span style={styles.brandProject}>
-              {active?.repoName ?? active?.alias ?? organization ?? "no repository"}
-            </span>
-          )}
-        </div>
-
         <div style={styles.searchWrap}>
           <span aria-hidden style={styles.searchIcon}>
             {/* Drawn inline: the page cannot import the host's icon set. */}
@@ -315,7 +301,9 @@ export function CodeGraphPage({ context }: PluginPageProps) {
                 event.currentTarget.blur();
               }
             }}
-            placeholder="Search a symbol or a file…"
+            placeholder={
+              "Search a symbol or file, or ask \u201chow does execute reach getFile\u201d \u2014 press / to focus"
+            }
             aria-label="Search query"
             style={styles.search}
           />
@@ -335,12 +323,31 @@ export function CodeGraphPage({ context }: PluginPageProps) {
           )}
         </div>
 
-        <div style={styles.stats}>
-          {active?.indexed
-            ? `${repositories.length} repositor${repositories.length === 1 ? "y" : "ies"} · indexed`
-            : active
-              ? "not indexed"
-              : ""}
+        <div style={styles.topbarRight}>
+          {repositories.length > 1 ? (
+            <select
+              aria-label="Repository"
+              value={projectId ?? ""}
+              onChange={(event) => setProjectId(event.target.value || null)}
+              style={styles.repoSelect}
+            >
+              {repositories.map((repo) => (
+                <option key={repo.projectId} value={repo.projectId}>
+                  {repo.name}
+                  {repo.indexed ? "" : " — not indexed"}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span style={styles.repoName}>
+              {active?.repoName ?? active?.alias ?? organization ?? "no repository"}
+            </span>
+          )}
+          {active?.indexed ? (
+            <span style={styles.stats}>{repositories.length} indexed</span>
+          ) : active ? (
+            <span style={styles.stats}>not indexed</span>
+          ) : null}
         </div>
       </header>
 
@@ -425,6 +432,13 @@ export function CodeGraphPage({ context }: PluginPageProps) {
                   what it calls on the right — each callee lined up with the line that calls it.
                 </p>
               </div>
+            ) : intent.kind === "question" ? (
+              <QuestionPanel
+                from={intent.from ?? ""}
+                to={intent.to ?? ""}
+                raw={intent.raw}
+                onSearch={(term) => setQuery(term)}
+              />
             ) : (
               <div style={styles.resultsWrap}>
                 {searching && results.length === 0 ? (
@@ -480,6 +494,64 @@ export function CodeGraphPage({ context }: PluginPageProps) {
           ) : null}
         </footer>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * What a question typed into the search box gets.
+ *
+ * The placeholder invites one — "ask 'how does execute reach getFile'" — so
+ * answering "no symbol matches" would be the box failing at something it
+ * advertised. What it says instead is what is true: the path search behind that
+ * question is the Flow view, which this plugin does not implement, and here is the
+ * next best thing that does work.
+ */
+function QuestionPanel({
+  from,
+  to,
+  raw,
+  onSearch,
+}: {
+  from: string;
+  to: string;
+  raw: string;
+  onSearch: (term: string) => void;
+}) {
+  return (
+    <div style={styles.resultsWrap}>
+      <h2 style={styles.questionTitle}>That is a question, not a symbol</h2>
+      <p style={styles.questionBody}>
+        You asked: <em>{raw}</em>
+      </p>
+      <p style={styles.questionBody}>
+        Answering it needs a path search between <code>{from}</code> and <code>{to}</code> —
+        the same traversal behind CodeGraph&apos;s own <strong>Flow</strong> view, which this
+        plugin does not implement: it keeps no call-path history to walk. Rather than guess
+        at a route between them, here is what does work:
+      </p>
+      <ul style={styles.questionList}>
+        <li style={styles.questionItem}>
+          <button type="button" style={styles.questionLink} onClick={() => onSearch(from)}>
+            Open {from}
+          </button>{" "}
+          and follow what it calls, each row citing the line that calls it.
+        </li>
+        <li style={styles.questionItem}>
+          <button type="button" style={styles.questionLink} onClick={() => onSearch(to)}>
+            Open {to}
+          </button>{" "}
+          and read who calls it, which is the same path from the other end.
+        </li>
+        <li style={styles.questionItem}>
+          The <strong>Map</strong> view shows how the modules are layered, if the question is
+          really about shape rather than a specific path.
+        </li>
+        <li style={styles.questionItem}>
+          For the path itself, run <code>codegraph ui</code> on the host — it is a local tool
+          and needs no Paperclip wiring.
+        </li>
+      </ul>
     </div>
   );
 }
@@ -760,16 +832,8 @@ const styles: Record<string, CSSProperties> = {
     background: ui.background,
     flexWrap: "wrap",
   },
-  brand: { display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" },
-  brandMark: {
-    width: 10,
-    height: 10,
-    borderRadius: 2,
-    background: ui.primary,
-    display: "inline-block",
-  },
-  brandName: { fontWeight: 600, fontSize: 14, letterSpacing: -0.2 },
-  brandProject: { color: ui.mutedForeground, fontFamily: ui.fontMono, fontSize: 12 },
+  topbarRight: { display: "flex", alignItems: "center", gap: 10, flex: "0 0 auto" },
+  repoName: { fontFamily: ui.fontMono, fontSize: 12, color: ui.mutedForeground },
   repoSelect: {
     fontFamily: ui.fontMono,
     fontSize: 12,
@@ -841,6 +905,20 @@ const styles: Record<string, CSSProperties> = {
     padding: "0 0 24px",
   },
   resultsWrap: { padding: 16 },
+  questionTitle: { margin: "0 0 10px", fontSize: 17, fontWeight: 600, letterSpacing: -0.2 },
+  questionBody: { margin: "0 0 10px", color: ui.mutedForeground, lineHeight: 1.55, maxWidth: 640 },
+  questionList: { margin: "0 0 0 4px", padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 8, maxWidth: 640 },
+  questionItem: { color: ui.mutedForeground, lineHeight: 1.5, fontSize: 12.5 },
+  questionLink: {
+    padding: 0,
+    border: "none",
+    background: "transparent",
+    color: ui.primary,
+    cursor: "pointer",
+    fontFamily: ui.fontMono,
+    fontSize: 12.5,
+    textDecoration: "underline",
+  },
   resultGroup: { marginBottom: 18 },
   resultGroupTitle: {
     margin: "0 0 6px",

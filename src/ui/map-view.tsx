@@ -69,6 +69,7 @@ export function MapView({
   // Zoom and pan are view state, not data: the boxes stay where the layout put
   // them, so a reader can zoom out to see the shape and back in to read a label
   // without the picture rearranging itself underneath them.
+  const [legendOpen, setLegendOpen] = useState(true);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
@@ -118,7 +119,7 @@ export function MapView({
   const cyclesOfThreeOrMore = layout.cycles.filter((cycle) => cycle.length >= 3);
 
   return (
-    <div style={styles.map}>
+    <>
       <div style={styles.stage}>
         {loading && !map ? (
           <p style={styles.dim}>Deriving the map…</p>
@@ -133,63 +134,7 @@ export function MapView({
           <p style={styles.dim}>No modules to draw for this selection.</p>
         ) : (
           <div style={styles.canvasWrap}>
-            <div style={styles.legend}>
-              <strong style={styles.legendTitle}>Key</strong>
-              <LegendRow swatch="box" label="A module — one directory, with the symbols and files in it" />
-              <LegendRow
-                swatch="bar"
-                label="How much leans on it — files elsewhere that reference it, against the most depended-on box here. The count is on the box"
-              />
-              <LegendRow swatch="line" label="Depends on — the box above calls, imports, extends or names a type from the box below. Thicker is more references" />
-              <LegendRow swatch="dashed" label="Points back up — the lighter half of a mutual dependency, or a link with no import behind it. Drawn dashed" />
-              <LegendRow swatch="layer" label="A module sits one layer above everything it depends on, so entry points end up at the top and the foundations at the bottom" />
-              <LegendRow swatch="selected" label="Selected — click a module to bring out its links; everything more than one hop away fades" />
-              <LegendRow swatch="empty" label="Nothing depends on this — a script, a workflow, an unreferenced corner" />
-              <LegendRow swatch="badge" label="Tests — more than half its files are tests, off unless you turn tests on" />
-              <LegendRow swatch="badge2" label="Generated — every file in it is tool-generated; nobody wrote it and nobody edits it" />
-              {hiddenWeak > 0 ? (
-                <LegendRow
-                  swatch="hidden"
-                  label={`${hiddenWeak} hidden — links carrying fewer than ${WEAK_LINK_THRESHOLD} references wait until you select a module they touch, so a weak coincidence never draws as a dependency`}
-                />
-              ) : null}
-            </div>
-
             <div style={styles.canvas}>
-              <div style={styles.controls}>
-                <button
-                  type="button"
-                  style={styles.controlButton}
-                  onClick={() => setScale((value) => Math.min(4, Number((value * 1.25).toFixed(3))))}
-                  title="Zoom in"
-                  aria-label="Zoom in"
-                >
-                  +
-                </button>
-                <button
-                  type="button"
-                  style={styles.controlButton}
-                  onClick={() => setScale((value) => Math.max(0.2, Number((value / 1.25).toFixed(3))))}
-                  title="Zoom out"
-                  aria-label="Zoom out"
-                >
-                  −
-                </button>
-                <button
-                  type="button"
-                  style={styles.controlButton}
-                  onClick={() => {
-                    setScale(1);
-                    setOffset({ x: 0, y: 0 });
-                  }}
-                  title="Reset zoom and position"
-                  aria-label="Reset zoom and position"
-                >
-                  ⟲
-                </button>
-                <span style={styles.zoomLabel}>{Math.round(scale * 100)}%</span>
-              </div>
-
               <svg
                 role="img"
                 aria-label={`Architecture map of ${organization ?? "this repository"}: ${layout.modules.length} modules`}
@@ -260,6 +205,85 @@ export function MapView({
                   />
                 ))}
               </svg>
+
+              {/*
+                Both chrome pieces are overlays on the graph, as in CodeGraph's own
+                viewer: the Key sits bottom-left and the zoom stack bottom-right, so
+                neither takes vertical space from the picture. `pointerEvents: none` on
+                the wrappers keeps drag-to-pan working through the gaps between them.
+              */}
+              <div style={styles.legendOverlay}>
+                {legendOpen ? (
+                  <div style={styles.legend}>
+                    <button
+                      type="button"
+                      style={styles.legendToggle}
+                      onClick={() => setLegendOpen(false)}
+                      aria-expanded
+                    >
+                      Key <span style={styles.legendCaret}>▾</span>
+                    </button>
+                    <div style={styles.legendBody}>
+                      <LegendRow swatch="box" label="A module — one directory, with the symbols and files in it" />
+                      <LegendRow
+                        swatch="bar"
+                        label="How much leans on it — files elsewhere that reference it, against the most depended-on box here. The count is on the box"
+                      />
+                      <LegendRow swatch="line" label="Depends on — the box above calls, imports, extends or names a type from the box below. Thicker is more references" />
+                      <LegendRow swatch="dashed" label="Points back up — the lighter half of a mutual dependency, or a link with no import behind it" />
+                      <LegendRow swatch="layer" label="A module sits one layer above everything it depends on, so entry points end up at the top and the foundations at the bottom" />
+                      <LegendRow swatch="selected" label="Selected — click a module to bring out its links; everything more than one hop away fades" />
+                      <LegendRow swatch="empty" label="Nothing depends on this — a script, a workflow, an unreferenced corner" />
+                      <LegendRow swatch="badge" label="Tests — more than half its files are tests, off unless you turn tests on" />
+                      <LegendRow swatch="badge2" label="Generated — every file in it is tool-generated; nobody wrote it and nobody edits it" />
+                      {hiddenWeak > 0 ? (
+                        <LegendRow
+                          swatch="hidden"
+                          label={`${hiddenWeak} hidden — links carrying fewer than ${WEAK_LINK_THRESHOLD} references wait until you select a module they touch`}
+                        />
+                      ) : null}
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button" style={styles.legendToggle} onClick={() => setLegendOpen(true)} aria-expanded={false}>
+                    Key <span style={styles.legendCaret}>▸</span>
+                  </button>
+                )}
+              </div>
+
+              <div style={styles.controlsOverlay}>
+                <button
+                  type="button"
+                  style={styles.controlButton}
+                  onClick={() => setScale((value) => Math.min(4, Number((value * 1.25).toFixed(3))))}
+                  title="Zoom in"
+                  aria-label="Zoom in"
+                >
+                  +
+                </button>
+                <button
+                  type="button"
+                  style={styles.controlButton}
+                  onClick={() => setScale((value) => Math.max(0.2, Number((value / 1.25).toFixed(3))))}
+                  title="Zoom out"
+                  aria-label="Zoom out"
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  style={styles.controlButton}
+                  onClick={() => {
+                    setScale(1);
+                    setOffset({ x: 0, y: 0 });
+                  }}
+                  title="Reset zoom and position"
+                  aria-label="Reset zoom and position"
+                >
+                  ⟲
+                </button>
+                <span style={styles.zoomLabel}>{Math.round(scale * 100)}%</span>
+              </div>
             </div>
           </div>
         )}
@@ -375,9 +399,188 @@ export function MapView({
           </div>
         ) : null}
       </aside>
-    </div>
+    </>
   );
 }
+
+/**
+ * Warm paper is gone; these are the host's tokens.
+ *
+ * Margins are absent on purpose: the page owns the spacing, so the canvas and its
+ * right-hand controls fill the region the page gives them and the map keeps the
+ * full available height rather than sharing it with a panel underneath.
+ */
+const styles: Record<string, CSSProperties> = {
+  map: {
+    display: "flex",
+    flex: "1 1 auto",
+    minHeight: 0,
+    alignItems: "stretch",
+  },
+  stage: {
+    position: "relative",
+    flex: "1 1 auto",
+    minWidth: 0,
+    overflow: "hidden",
+    background: ui.background,
+    display: "flex",
+    padding: 12,
+  },
+  canvasWrap: {
+    position: "relative",
+    flex: "1 1 auto",
+    minWidth: 0,
+    minHeight: 0,
+    display: "flex",
+  },
+  canvas: {
+    position: "relative",
+    flex: "1 1 auto",
+    minWidth: 0,
+    border: `1px solid ${ui.border}`,
+    borderRadius: 8,
+    background: ui.background,
+    overflow: "auto",
+  },
+  svg: { display: "block" },
+
+  // -- Overlays -----------------------------------------------------------
+  /** Bottom-left, as CodeGraph's own Key panel is. */
+  legendOverlay: {
+    position: "absolute",
+    left: 24,
+    bottom: 24,
+    maxWidth: 420,
+    pointerEvents: "none",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    zIndex: 2,
+  },
+  legend: {
+    pointerEvents: "auto",
+    border: `1px solid ${ui.border}`,
+    borderRadius: 8,
+    background: ui.card,
+    boxShadow: "0 1px 3px rgba(0,0,0,0.10)",
+    padding: "6px 10px 8px",
+    maxHeight: 420,
+    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+    gap: 5,
+  },
+  legendToggle: {
+    pointerEvents: "auto",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "3px 8px",
+    border: `1px solid ${ui.border}`,
+    borderRadius: 6,
+    background: ui.card,
+    color: ui.mutedForeground,
+    fontFamily: "inherit",
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  legendCaret: { fontSize: 9 },
+  legendBody: { display: "flex", flexDirection: "column", gap: 5 },
+  legendTitle: { fontSize: 11, color: ui.foreground, fontWeight: 600 },
+  legendRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 6,
+    fontSize: 11,
+    lineHeight: 1.4,
+    color: ui.mutedForeground,
+  },
+
+  /** Bottom-right, as the viewer's zoom stack is. */
+  controlsOverlay: {
+    position: "absolute",
+    right: 24,
+    bottom: 24,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 2,
+    pointerEvents: "auto",
+    zIndex: 2,
+    border: `1px solid ${ui.border}`,
+    borderRadius: 8,
+    background: ui.card,
+    padding: 2,
+    boxShadow: "0 1px 3px rgba(0,0,0,0.10)",
+  },
+  controlButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    border: "none",
+    background: "transparent",
+    color: "inherit",
+    cursor: "pointer",
+    fontSize: 14,
+    lineHeight: 1,
+    fontFamily: "inherit",
+  },
+  zoomLabel: {
+    fontSize: 9.5,
+    fontFamily: ui.fontMono,
+    color: ui.mutedForeground,
+    paddingBottom: 2,
+  },
+
+  // -- Right-hand controls ------------------------------------------------
+  side: {
+    flex: "0 0 300px",
+    minWidth: 0,
+    borderLeft: `1px solid ${ui.border}`,
+    padding: 14,
+    overflowY: "auto",
+    background: ui.card,
+  },
+  sideTitle: { margin: "0 0 6px", fontSize: 14, fontWeight: 600 },
+  sideBody: { margin: "0 0 12px", fontSize: 12, color: ui.mutedForeground, lineHeight: 1.5 },
+  field: { display: "block", marginBottom: 12 },
+  fieldLabel: {
+    display: "block",
+    fontSize: 10.5,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    color: ui.mutedForeground,
+    marginBottom: 4,
+  },
+  select: {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "6px 8px",
+    borderRadius: 6,
+    border: `1px solid ${ui.input}`,
+    background: "transparent",
+    color: "inherit",
+    fontFamily: "inherit",
+    fontSize: 12.5,
+  },
+  toggle: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    fontSize: 12.5,
+    cursor: "pointer",
+    marginBottom: 12,
+  },
+  notes: { display: "flex", flexDirection: "column", gap: 8, marginTop: 8 },
+  note: { margin: 0, fontSize: 11.5, color: ui.mutedForeground, lineHeight: 1.5 },
+  noteWarning: { margin: 0, fontSize: 11.5, color: ui.foreground, lineHeight: 1.5 },
+  cycleList: { margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 },
+  cycleItem: { fontSize: 10.5, fontFamily: ui.fontMono, color: ui.mutedForeground },
+  dim: { color: ui.mutedForeground, fontSize: 12, margin: 8 },
+  error: { color: ui.destructive, fontSize: 12, margin: 8 },
+};
 
 /** One module: its label, its counts, and the bar showing how much leans on it. */
 function ModuleBox({
@@ -427,9 +630,7 @@ function ModuleBox({
         {module.files === 1 ? "" : "s"}
       </text>
       <text x={x + 10} y={y + 45} fontSize={9.5} fill={ui.mutedForeground}>
-        {module.unreferenced
-          ? "nothing depends on this"
-          : `${module.dependents} depend on it`}
+        {module.unreferenced ? "nothing depends on this" : `${module.dependents} depend on it`}
         {module.test ? " · tests" : ""}
         {module.generated ? " · generated" : ""}
       </text>
@@ -440,37 +641,45 @@ function ModuleBox({
   );
 }
 
-type Swatch = "box" | "bar" | "line" | "dashed" | "layer" | "selected" | "empty" | "badge" | "badge2" | "hidden";
+type Swatch =
+  | "box"
+  | "bar"
+  | "line"
+  | "dashed"
+  | "layer"
+  | "selected"
+  | "empty"
+  | "badge"
+  | "badge2"
+  | "hidden";
 
 function LegendRow({ swatch, label }: { swatch: Swatch; label: string }) {
   return (
     <span style={styles.legendRow}>
-      <svg width="22" height="12" aria-hidden style={{ flex: "0 0 auto" }}>
+      <svg width="20" height="12" aria-hidden style={{ flex: "0 0 auto", marginTop: 1 }}>
         {swatch === "box" ? (
-          <rect x="2" y="2" width="18" height="8" rx="2" fill={ui.card} stroke={ui.border} />
+          <rect x="1" y="2" width="18" height="8" rx="2" fill={ui.card} stroke={ui.border} />
         ) : swatch === "bar" ? (
-          <rect x="2" y="5" width="16" height="2.5" rx="1" fill={ui.primary} />
+          <rect x="1" y="5" width="16" height="2.5" rx="1" fill={ui.primary} />
         ) : swatch === "line" ? (
-          <path d="M2 6 H20" stroke={ui.mutedForeground} strokeWidth="2.5" />
+          <path d="M1 6 H19" stroke={ui.mutedForeground} strokeWidth="2.5" />
         ) : swatch === "dashed" ? (
-          <path d="M2 6 H20" stroke={ui.mutedForeground} strokeWidth="2.5" strokeDasharray="4 3" />
+          <path d="M1 6 H19" stroke={ui.mutedForeground} strokeWidth="2.5" strokeDasharray="4 3" />
         ) : swatch === "layer" ? (
           <>
-            <rect x="2" y="1" width="18" height="4" rx="1" fill={ui.muted} stroke={ui.border} />
-            <rect x="2" y="7" width="18" height="4" rx="1" fill={ui.muted} stroke={ui.border} />
+            <rect x="1" y="1" width="18" height="4" rx="1" fill={ui.muted} stroke={ui.border} />
+            <rect x="1" y="7" width="18" height="4" rx="1" fill={ui.muted} stroke={ui.border} />
           </>
         ) : swatch === "selected" ? (
-          <rect x="2" y="2" width="18" height="8" rx="2" fill={ui.card} stroke={ui.primary} strokeWidth="2" />
+          <rect x="1" y="2" width="18" height="8" rx="2" fill={ui.card} stroke={ui.primary} strokeWidth="2" />
         ) : swatch === "empty" ? (
-          <>
-            <rect x="2" y="2" width="18" height="8" rx="2" fill={ui.card} stroke={ui.border} strokeDasharray="3 2" />
-          </>
+          <rect x="1" y="2" width="18" height="8" rx="2" fill={ui.card} stroke={ui.border} strokeDasharray="3 2" />
         ) : swatch === "badge" ? (
-          <rect x="4" y="3" width="14" height="6" rx="3" fill={ui.muted} stroke={ui.border} />
+          <rect x="3" y="3" width="14" height="6" rx="3" fill={ui.muted} stroke={ui.border} />
         ) : swatch === "badge2" ? (
-          <rect x="4" y="3" width="14" height="6" rx="1" fill={ui.muted} stroke={ui.border} />
+          <rect x="3" y="3" width="14" height="6" rx="1" fill={ui.muted} stroke={ui.border} />
         ) : (
-          <path d="M2 6 H20" stroke={ui.mutedForeground} strokeWidth="1" strokeDasharray="1.5 3" />
+          <path d="M1 6 H19" stroke={ui.mutedForeground} strokeWidth="1" strokeDasharray="1.5 3" />
         )}
       </svg>
       <span>{label}</span>
@@ -483,116 +692,3 @@ function trim(label: string, available: number): string {
   const capacity = Math.max(6, Math.floor(available / 6.2));
   return label.length <= capacity ? label : `…${label.slice(label.length - capacity + 1)}`;
 }
-
-const styles: Record<string, CSSProperties> = {
-  map: {
-    display: "flex",
-    flex: "1 1 auto",
-    minHeight: 0,
-    alignItems: "stretch",
-  },
-  stage: {
-    flex: "1 1 auto",
-    minWidth: 0,
-    overflow: "auto",
-    padding: 12,
-    background: ui.background,
-  },
-  canvasWrap: { display: "flex", flexDirection: "column", gap: 8 },
-  legend: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "4px 16px",
-    alignItems: "center",
-    fontSize: 11,
-    color: ui.mutedForeground,
-    paddingBottom: 8,
-    borderBottom: `1px solid ${ui.border}`,
-  },
-  legendTitle: { fontSize: 11, color: ui.foreground, marginRight: 4 },
-  legendRow: { display: "inline-flex", alignItems: "center", gap: 5 },
-  controls: {
-    display: "flex",
-    alignItems: "center",
-    gap: 4,
-    padding: "6px 8px",
-    borderBottom: `1px solid ${ui.border}`,
-    background: ui.card,
-    position: "sticky",
-    top: 0,
-    zIndex: 1,
-  },
-  controlButton: {
-    width: 26,
-    height: 26,
-    borderRadius: 6,
-    border: `1px solid ${ui.border}`,
-    background: ui.background,
-    color: "inherit",
-    cursor: "pointer",
-    fontSize: 14,
-    lineHeight: 1,
-    fontFamily: "inherit",
-  },
-  zoomLabel: {
-    marginLeft: 4,
-    fontSize: 11,
-    fontFamily: ui.fontMono,
-    color: ui.mutedForeground,
-  },
-  legendRowWrap: {},
-  canvas: {
-    border: `1px solid ${ui.border}`,
-    borderRadius: 8,
-    background: ui.background,
-    overflow: "auto",
-    maxHeight: "70vh",
-  },
-  svg: { display: "block" },
-  side: {
-    flex: "0 0 300px",
-    minWidth: 0,
-    borderLeft: `1px solid ${ui.border}`,
-    padding: 14,
-    overflowY: "auto",
-    background: ui.card,
-  },
-  sideTitle: { margin: "0 0 6px", fontSize: 14, fontWeight: 600 },
-  sideBody: { margin: "0 0 12px", fontSize: 12, color: ui.mutedForeground, lineHeight: 1.5 },
-  field: { display: "block", marginBottom: 12 },
-  fieldLabel: {
-    display: "block",
-    fontSize: 10.5,
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    color: ui.mutedForeground,
-    marginBottom: 4,
-  },
-  select: {
-    width: "100%",
-    boxSizing: "border-box",
-    padding: "6px 8px",
-    borderRadius: 6,
-    border: `1px solid ${ui.border}`,
-    background: ui.background,
-    color: "inherit",
-    fontFamily: "inherit",
-    fontSize: 12.5,
-  },
-  toggle: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    fontSize: 12.5,
-    cursor: "pointer",
-    marginBottom: 12,
-  },
-  notes: { display: "flex", flexDirection: "column", gap: 8, marginTop: 8 },
-  note: { margin: 0, fontSize: 11.5, color: ui.mutedForeground, lineHeight: 1.5 },
-  noteWarning: { margin: 0, fontSize: 11.5, color: ui.foreground, lineHeight: 1.5 },
-  cycleList: { margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 },
-  cycleItem: { fontSize: 10.5, fontFamily: ui.fontMono, color: ui.mutedForeground },
-  dim: { color: ui.mutedForeground, fontSize: 12, margin: 8 },
-  error: { color: ui.destructive, fontSize: 12, margin: 8 },
-};
