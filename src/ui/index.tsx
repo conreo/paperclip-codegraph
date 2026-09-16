@@ -54,15 +54,15 @@ const TOOL_SUFFIXES = [
 
 const READ_ONLY_TOOL_NAMES = TOOL_SUFFIXES.map((name) => `codegraph_${name}`);
 
+
 /**
- * What goes into the Paperclip profile.
+ * What goes into the Paperclip profile: the eight read-only tools.
  *
- * `codegraph_request_access` is included deliberately: it is the one tool not
- * gated by CodeGraph governance, so a denied agent can still ask for access. If
- * it is missing from the profile, the request flow is unreachable and a denied
- * agent has no way to become an allowed one.
+ * `codegraph_request_access` used to be here too. It was removed with the whole
+ * request flow: access follows from the agent's project membership, which
+ * Paperclip owns, so there is nothing for an agent to request.
  */
-const PROFILE_TOOL_NAMES = [...READ_ONLY_TOOL_NAMES, "codegraph_request_access"];
+const PROFILE_TOOL_NAMES = READ_ONLY_TOOL_NAMES;
 
 interface Readiness {
   enabled: boolean;

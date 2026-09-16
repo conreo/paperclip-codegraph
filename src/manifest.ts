@@ -13,7 +13,7 @@
  */
 
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { PLUGIN_ID, PLUGIN_VERSION, REQUEST_ACCESS_TOOL } from "./constants.js";
+import { PLUGIN_ID, PLUGIN_VERSION } from "./constants.js";
 import { INSTANCE_CONFIG_SCHEMA } from "./config.js";
 import { CODEGRAPH_TOOL_SPECS, toJsonSchema } from "./tools/catalog.js";
 
@@ -65,33 +65,6 @@ const manifest: PaperclipPluginManifestV1 = {
   },
   instanceConfigSchema: INSTANCE_CONFIG_SCHEMA,
   tools: [
-    {
-      // Deliberately NOT one of the eight CodeGraph tools, and deliberately not
-      // gated by CodeGraph's own governance: an agent with no grant must still
-      // be able to ask for one. It is subject to Paperclip's own profile, which
-      // is why Activate includes it.
-      name: REQUEST_ACCESS_TOOL,
-      displayName: "Request CodeGraph access",
-      description:
-        "Ask a board member for CodeGraph access to a repository. Use this when CodeGraph tools are denied for you. Records a request for a human to approve; it does not grant access by itself and does not need to be retried.",
-      parametersSchema: {
-        type: "object",
-        properties: {
-          repository: {
-            type: "string",
-            description:
-              "Repository you need, by name (as bound) or path. Ask for one repository per request.",
-          },
-          reason: {
-            type: "string",
-            description:
-              "Why you need it — what you are trying to find or change. The board decides on this.",
-          },
-        },
-        required: ["repository", "reason"],
-        additionalProperties: false,
-      },
-    },
     ...CODEGRAPH_TOOL_SPECS.map((spec) => ({
     name: spec.name,
       displayName: spec.displayName,
