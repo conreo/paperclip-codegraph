@@ -80,6 +80,11 @@ import {
 } from "./codegraph/manage.js";
 import { mergeGovernance } from "./governance/merge.js";
 import {
+  GraphUnavailable,
+  neighbourhood,
+  searchNodes,
+} from "./graph/neighbourhood.js";
+import {
   acceptWorkspacePath,
   buildWorkspaceGovernance,
   shouldTryWorkspaceFallback,
@@ -898,6 +903,71 @@ const plugin = definePlugin({
     });
 
     /**
+     * Resolve the repository a graph request is about.
+     *
+     * The operator picks a project; the path comes from that project's own
+     * workspace, exactly as the tool path does. Nothing here accepts a path.
+     */
+    const repositoryForProject = async (
+      companyId: string,
+      projectId: string | null,
+    ): Promise<string> => {
+      const { config: scoped } = await loadConfig(ctx, companyId);
+      const roots = containmentRoots(scoped, await repositoryRoot(ctx, companyId));
+
+      let target = projectId;
+      if (!target) {
+        const projects = await ctx.projects.list({ companyId, limit: 200, offset: 0 });
+        target = projects[0]?.id ?? null;
+      }
+      if (!target) throw new GraphUnavailable("This org has no projects.", "not_indexed");
+
+      const workspace = await ctx.projects.getPrimaryWorkspace(target, companyId);
+      const resolved = acceptWorkspacePath(workspace?.path, roots);
+      if (!resolved) {
+        throw new GraphUnavailable(
+          "That project has no usable repository workspace.",
+          "not_indexed",
+        );
+      }
+      return resolved;
+    };
+
+    /** Symbol search in one of this org's repositories. */
+    ctx.data.register("graph-search", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      const query = asString(params?.["query"]);
+      if (!companyId || !query) return { results: [] };
+      try {
+        const projectPath = await repositoryForProject(
+          companyId,
+          asString(params?.["projectId"]),
+        );
+        return { results: searchNodes(projectPath, query) };
+      } catch (error) {
+        return graphFailure(error);
+      }
+    });
+
+    /** The call neighbourhood around one symbol, for the graph view. */
+    ctx.data.register("graph-neighbourhood", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      const nodeId = asString(params?.["nodeId"]);
+      if (!companyId || !nodeId) return { error: "companyId and nodeId are required" };
+      const depthRaw = params?.["depth"];
+      const depth = typeof depthRaw === "number" && Number.isFinite(depthRaw) ? depthRaw : 1;
+      try {
+        const projectPath = await repositoryForProject(
+          companyId,
+          asString(params?.["projectId"]),
+        );
+        return { graph: neighbourhood(projectPath, nodeId, depth) };
+      } catch (error) {
+        return graphFailure(error);
+      }
+    });
+
+    /**
      * Who may use CodeGraph.
      *
      * Default is everyone: an agent working in one of this org's projects reads
@@ -1323,6 +1393,20 @@ export function extractServedFiles(text: string): string[] {
     }
   }
   return [...found].sort();
+}
+
+/**
+ * A graph failure is data, not an exception.
+ *
+ * `schema_drift` in particular must reach the operator as a named reason: an
+ * empty graph would read as "this repository has no symbols" and send them
+ * debugging the wrong layer.
+ */
+function graphFailure(error: unknown): { error: string; reason?: string } {
+  if (error instanceof GraphUnavailable) {
+    return { error: error.message, reason: error.reason };
+  }
+  return { error: error instanceof Error ? error.message : String(error) };
 }
 
 function toStringArray(value: unknown): string[] {
