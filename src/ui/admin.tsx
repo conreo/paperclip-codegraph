@@ -1,19 +1,26 @@
 /**
- * CodeGraph's settings, in **Settings → Plugins → CodeGraph**.
+ * CodeGraph's settings, following the structure of Paperclip's own General
+ * settings page.
  *
- * The host mounts a `settingsPage` slot at
- * `/:companyPrefix/company/settings/instance/plugins/:pluginId` and, when a
- * plugin declares one, uses it *instead of* the auto-generated config form
- * (`ui/src/pages/PluginSettings.tsx`). That is where per-plugin settings belong,
- * so every control the operator has lives here: status, activation, the org's
- * repositories with their index state, and who may use the tools.
+ * The shape is taken from `ui/src/pages/InstanceGeneralSettings.tsx` rather than
+ * invented, because a plugin page that invents its own layout reads as unfinished
+ * next to the app around it:
  *
- * Nothing in this file can widen access. Repositories follow the agent's
- * Paperclip project, and unticking an agent is the only edit the access section
- * offers — so the worst a mistake here can do is narrow.
+ *   - a `max-w-4xl` column of spaced sections, one idea each;
+ *   - a section is a `text-sm font-semibold` heading and a short muted sentence
+ *     saying what it does;
+ *   - a setting is saved by a **switch that writes immediately**, right-aligned
+ *     beside its text — no Save button, because General settings has none and a
+ *     form that needs saving is one that can be abandoned half-changed;
+ *   - a text field with a Save button only where a value genuinely needs typing;
+ *   - a failure is one destructive-tinted banner, not a scattered message.
+ *
+ * The copy is deliberately plain. "Availability follows the Paperclip project an
+ * agent is working in, so this is set per repository rather than per agent" was
+ * accurate and unreadable; it now says what happens, and what the switch does.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   usePluginAction,
   usePluginData,
@@ -33,7 +40,7 @@ import {
   type StepOutcome,
 } from "../activation.js";
 import { sanitizeErrorMessage } from "../errors.js";
-import { readOperatorConfig, operatorConfigForSave, type OperatorConfig } from "../config.js";
+import { operatorConfigForSave, readOperatorConfig, type OperatorConfig } from "../config.js";
 import { StatusLine, styles } from "./chrome.js";
 import { useRefreshSignal } from "./refresh.js";
 import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
@@ -41,7 +48,7 @@ import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
 /** Must match the manifest id; the host namespaces tools with it. */
 const PLUGIN_ID = "paperclip-codegraph";
 
-const TOOL_SUFFIXES = [
+const TOOL_NAMES = [
   "explore",
   "search",
   "callers",
@@ -50,27 +57,13 @@ const TOOL_SUFFIXES = [
   "node",
   "status",
   "files",
-] as const;
-
-const READ_ONLY_TOOL_NAMES = TOOL_SUFFIXES.map((name) => `codegraph_${name}`);
-
-/**
- * What goes into the Paperclip profile: the eight read-only tools.
- *
- * `codegraph_request_access` used to be here too. It was removed with the whole
- * request flow: access follows from the agent's project membership, which
- * Paperclip owns, so there is nothing for an agent to request.
- */
-const PROFILE_TOOL_NAMES = READ_ONLY_TOOL_NAMES;
+].map((name) => `codegraph_${name}`);
 
 interface AgentRow {
   id: string;
   name: string;
-  /** Absent means allowed — the default is on, and switches only narrow. */
   enabled?: boolean;
-  /** Whether this agent loads an MCP client at all. */
   mcpClientLoaded?: boolean;
-  /** Whether that client is pointed at the company MCP config. */
   mcpConfigPassed?: boolean;
 }
 
@@ -80,26 +73,22 @@ interface RepoRow {
   alias: string;
   repoName?: string | null;
   indexed: boolean;
-  /** True when an operator has switched CodeGraph off for this repository. */
   blocked?: boolean;
   fileCount?: number | null;
   nodeCount?: number | null;
-  lastIndexed?: string | null;
 }
 
 interface Readiness {
   enabled: boolean;
   codegraph: { ok: boolean; version: string | null; detail: string };
-  /** `required` is true only when a bound repository path is relative. */
-  folder: { configured: boolean; alias: string | null; required?: boolean };
-  repository: { configured: boolean; key: string | null; indexed: boolean; alias: string | null };
+  repository: { configured: boolean; indexed: boolean; alias: string | null };
 }
 
+type Tone = "success" | "error" | "warn";
+type Notify = (text: string, tone: Tone) => void;
+
 /** One credentialed call to the host's own API, as the signed-in board member. */
-async function coreApi<T>(
-  path: string,
-  init?: { method?: string; body?: unknown },
-): Promise<T> {
+async function coreApi<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
   const response = await fetch(path, {
     method: init?.method ?? "GET",
     credentials: "include",
@@ -123,152 +112,508 @@ async function coreApi<T>(
   return parsed as T;
 }
 
-/**
- * Run one activation step, treating "already exists" as success.
- *
- * Paperclip has no stable conflict code on these routes, so the message decides.
- * Anything unrecognised is rethrown — a real failure must not be reported as a
- * no-op.
- */
-async function attempt(fn: () => Promise<unknown>): Promise<StepOutcome> {
-  try {
-    await fn();
-    return "created";
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (isAlreadyExistsMessage(message)) return "already-existed";
-    throw error;
-  }
-}
-
 export function SettingsPage({ context }: PluginSettingsPageProps) {
   const companyId = context.companyId;
   const { refresh, revision } = useRefreshSignal();
+  const toast = usePluginToast();
 
   const { data: readiness, loading: readinessLoading, error: readinessError } =
     usePluginData<Readiness>(DATA_KEYS.readiness);
 
-  /**
-   * The one read of the repositories for this page.
-   *
-   * The Status section used to take its repository fact from the governance
-   * *binding* while the Repositories section took it from the org's actual
-   * projects, so the two contradicted each other on screen: "No repository yet"
-   * directly above a repository with 640 files and 12,085 nodes. Bindings are an
-   * override mechanism, not a declaration of what exists, so Status now reports
-   * the same repositories the rest of the page lists.
-   */
   const { data: overview, loading: overviewLoading } = usePluginData<{
     organization?: string | null;
     repositories: RepoRow[];
     skippedProjects?: number;
-    enabled?: boolean;
   }>(DATA_KEYS.graphProjects, { companyId, revision });
 
-  const organization = overview?.organization ?? null;
+  const notify: Notify = useCallback(
+    (text, tone) => toast({ title: "CodeGraph", body: text, tone }),
+    [toast],
+  );
+
+  if (!companyId) {
+    return (
+      <div style={styles.page}>
+        <p style={styles.body}>Open this page inside an organization to configure CodeGraph.</p>
+      </div>
+    );
+  }
+
+  const loading = readinessLoading || (overviewLoading && !overview);
   const repositories = overview?.repositories ?? [];
-  const indexedCount = repositories.filter((repo) => repo.indexed).length;
-  const unavailableCount = repositories.filter((repo) => repo.blocked === true).length;
+  const indexed = repositories.filter((repo) => repo.indexed).length;
 
-  const [busy, setBusy] = useState<string | null>(null);
-  const toast = usePluginToast();
+  return (
+    <div style={styles.page}>
+      <header style={styles.title}>
+        <h1 style={styles.h1}>
+          CodeGraph{overview?.organization ? ` · ${overview.organization}` : ""}
+        </h1>
+        <p style={styles.lead}>
+          Code intelligence for your agents. They read the code of the Paperclip project they are
+          working in.
+        </p>
+      </header>
 
-  /**
-   * Create the Paperclip objects that make the tools callable.
-   *
-   * This is board-only work: `POST /tools/profiles` and `POST /tools/gateways`
-   * need a board member, and this bundle runs as trusted same-origin code
-   * (`PLUGIN_SPEC.md` §23), so the fetch carries the operator's own session.
-   * Safe to run twice: a conflict is resolved by reusing the profile and gateway
-   * this plugin owns.
-   */
-  const activate = useCallback(async () => {
-    if (!companyId) return;
-    setBusy("activate");
+      {readinessError ? (
+        <div style={styles.errorBanner}>
+          Could not read the current state: {sanitizeErrorMessage(readinessError)}
+        </div>
+      ) : null}
 
-    const profilesPath = `/api/companies/${companyId}/tools/profiles`;
-    const profileBody = {
-      profileKey: PROFILE_KEY,
-      name: "CodeGraph (read-only)",
-      description: "Read-only CodeGraph tools. Every CodeGraph tool is query-only.",
-      status: "active",
-      defaultAction: "deny",
-      entries: PROFILE_TOOL_NAMES.map((toolName) => ({
-        selectorType: "tool_name",
-        effect: "include",
-        toolName: `${PLUGIN_ID}:${toolName}`,
-      })),
+      <Section title="Status" description="What this organization has right now.">
+        {loading ? (
+          <p style={styles.muted}>Checking…</p>
+        ) : (
+          <ul style={styles.list}>
+            <StatusLine
+              ok={readiness?.enabled === true}
+              good="CodeGraph is on for this organization"
+              bad="CodeGraph is off — switch it on below"
+            />
+            <StatusLine
+              ok={readiness?.codegraph.ok === true}
+              good={`CodeGraph ${readiness?.codegraph.version ?? ""} found`}
+              bad={readiness?.codegraph.detail ?? "CodeGraph was not found"}
+            />
+            <StatusLine
+              ok={indexed > 0}
+              good={
+                repositories.length === 1
+                  ? `1 repository · ${indexed === 1 ? "indexed" : "not indexed"}`
+                  : `${repositories.length} repositories · ${indexed} indexed`
+              }
+              bad={
+                repositories.length === 0
+                  ? "No repository yet — one appears when a project here has a workspace"
+                  : "No index yet — build one below"
+              }
+            />
+          </ul>
+        )}
+      </Section>
+
+      <Configuration companyId={companyId} onSaved={refresh} onMessage={notify} />
+      <Activate companyId={companyId} onMessage={notify} />
+      <Repositories
+        companyId={companyId}
+        revision={revision}
+        onChanged={refresh}
+        onMessage={notify}
+      />
+      <Indexing companyId={companyId} revision={revision} onChanged={refresh} onMessage={notify} />
+      <Exceptions companyId={companyId} revision={revision} onChanged={refresh} onMessage={notify} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Layout pieces
+// ---------------------------------------------------------------------------
+
+/** A heading, a sentence, and its controls. One idea per section. */
+function Section({
+  title,
+  description,
+  children,
+  control,
+}: {
+  title: string;
+  description: string;
+  children?: ReactNode;
+  control?: ReactNode;
+}) {
+  return (
+    <section style={styles.section}>
+      <div style={control ? styles.sectionSplit : styles.sectionStack}>
+        <div style={styles.sectionText}>
+          <h2 style={styles.h2}>{title}</h2>
+          <p style={styles.body}>{description}</p>
+        </div>
+        {control}
+      </div>
+      {children ? <div style={styles.sectionBody}>{children}</div> : null}
+    </section>
+  );
+}
+
+/**
+ * The switch, matching the host's `ToggleSwitch`.
+ *
+ * Capsule track, oval thumb, and the host's status-green when on — taken from
+ * `ui/src/components/ui/toggle-switch.tsx`, including its deliberate choice of the
+ * status colour over `primary`, which that file records as a ruling.
+ */
+function Switch({
+  checked,
+  onChange,
+  disabled,
+  label,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      style={{
+        ...styles.switch,
+        ...(checked ? styles.switchOn : styles.switchOff),
+        ...(disabled ? styles.switchDisabled : null),
+      }}
+    >
+      <span
+        style={{ ...styles.thumb, transform: checked ? "translateX(16px)" : "translateX(0)" }}
+      />
+    </button>
+  );
+}
+
+function Button({
+  children,
+  onClick,
+  disabled,
+  variant = "default",
+  title,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  variant?: "default" | "primary";
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        ...styles.button,
+        ...(variant === "primary" ? styles.buttonPrimary : null),
+        ...(disabled ? styles.buttonDisabled : null),
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+function Configuration({
+  companyId,
+  onSaved,
+  onMessage,
+}: {
+  companyId: string;
+  onSaved: () => void;
+  onMessage: Notify;
+}) {
+  const path = `/api/plugins/${PLUGIN_ID}/config?companyId=${encodeURIComponent(companyId)}`;
+  const [stored, setStored] = useState<Record<string, unknown> | null>(null);
+  const [draft, setDraft] = useState<OperatorConfig | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    coreApi<{ configJson?: unknown } | null>(path)
+      .then((response) => {
+        if (cancelled) return;
+        const document =
+          response && typeof response === "object" && "configJson" in response
+            ? (response as { configJson?: unknown }).configJson
+            : response;
+        const record =
+          typeof document === "object" && document !== null && !Array.isArray(document)
+            ? (document as Record<string, unknown>)
+            : {};
+        setStored(record);
+        setDraft(readOperatorConfig(document));
+      })
+      .catch((error) => {
+        if (!cancelled) setFailure(sanitizeErrorMessage(error));
+      });
+    return () => {
+      cancelled = true;
     };
+  }, [path]);
 
+  /** Write one change immediately, the way a General settings switch does. */
+  const write = useCallback(
+    async (edits: Partial<OperatorConfig>, announce?: string) => {
+      if (!draft) return;
+      setBusy(true);
+      try {
+        // Only the schema's own keys are sent: the server validates this payload
+        // with a closed schema, so an extra key is a rejected request rather than
+        // a preserved setting.
+        const { config: configJson, droppedKeys } = operatorConfigForSave(stored, {
+          ...draft,
+          ...edits,
+        });
+        await coreApi(`/api/plugins/${PLUGIN_ID}/config`, {
+          method: "POST",
+          body: { companyId, configJson },
+        });
+        setStored(configJson);
+        setDraft(readOperatorConfig(configJson));
+        onSaved();
+        if (droppedKeys.length > 0) {
+          onMessage(
+            `Saved. This plugin no longer uses ${droppedKeys.join(", ")}, so ${
+              droppedKeys.length === 1 ? "it was" : "they were"
+            } removed.`,
+            "warn",
+          );
+        } else if (announce) {
+          onMessage(announce, "success");
+        }
+      } catch (error) {
+        onMessage(sanitizeErrorMessage(error), "error");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [companyId, draft, onMessage, onSaved, stored],
+  );
+
+  if (failure) {
+    return (
+      <Section title="Configuration" description="Settings for this organization.">
+        <div style={styles.errorBanner}>
+          Could not read the settings: {failure} Nothing was changed.
+        </div>
+      </Section>
+    );
+  }
+
+  if (!draft) {
+    return (
+      <Section title="Configuration" description="Settings for this organization.">
+        <p style={styles.muted}>Loading…</p>
+      </Section>
+    );
+  }
+
+  return (
+    <>
+      <Section
+        title="CodeGraph for this organization"
+        description="While this is off, every CodeGraph call is refused, whatever an agent is otherwise allowed. It is off until you turn it on."
+        control={
+          <Switch
+            checked={draft.enabled}
+            disabled={busy}
+            label="Enable CodeGraph for this organization"
+            onChange={(next) =>
+              void write({ enabled: next }, next ? "CodeGraph is on." : "CodeGraph is off.")
+            }
+          />
+        }
+      />
+
+      <Section
+        title="Build the index automatically"
+        description="Index a repository the first time something asks for it. Leave it off to build indexes yourself, with the buttons below."
+        control={
+          <Switch
+            checked={draft.autoIndex}
+            disabled={busy}
+            label="Build the index automatically"
+            onChange={(next) => void write({ autoIndex: next })}
+          />
+        }
+      />
+
+      <Section
+        title="Install CodeGraph automatically"
+        description="Install CodeGraph on this server if it is missing. Off means you install it yourself, which is what a managed host usually wants."
+        control={
+          <Switch
+            checked={draft.autoInstall}
+            disabled={busy}
+            label="Install CodeGraph automatically"
+            onChange={(next) => void write({ autoInstall: next })}
+          />
+        }
+      />
+
+      <Section
+        title="CodeGraph executable"
+        description="The command to run. Set a full path if CodeGraph is not on the server's PATH."
+      >
+        <Field
+          value={draft.codegraphCommand}
+          disabled={busy}
+          placeholder="codegraph"
+          label="CodeGraph executable"
+          onCommit={(value) => void write({ codegraphCommand: value }, "Executable updated.")}
+        />
+      </Section>
+
+      <Section
+        title="Directories CodeGraph may read"
+        description="A limit, not a list. Leave it empty to let CodeGraph read whichever repository a project points at, anywhere on this server. Worth setting when more than one organization shares this instance."
+      >
+        <Field
+          value={draft.allowedProjectRoots.join("\n")}
+          disabled={busy}
+          placeholder="/srv/repos"
+          label="Directories CodeGraph may read"
+          multiline
+          onCommit={(value) =>
+            void write({
+              allowedProjectRoots: value
+                .split("\n")
+                .map((line) => line.trim())
+                .filter((line) => line.length > 0),
+            })
+          }
+        />
+      </Section>
+    </>
+  );
+}
+
+/** A text field that writes on Save, for values that have to be typed. */
+function Field({
+  value,
+  onCommit,
+  disabled,
+  placeholder,
+  label,
+  multiline,
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+  label: string;
+  multiline?: boolean;
+}) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  const changed = text !== value;
+
+  return (
+    <div style={styles.field}>
+      {multiline ? (
+        <textarea
+          aria-label={label}
+          value={text}
+          rows={3}
+          disabled={disabled}
+          placeholder={placeholder}
+          onChange={(event) => setText(event.target.value)}
+          style={styles.textarea}
+        />
+      ) : (
+        <input
+          aria-label={label}
+          value={text}
+          disabled={disabled}
+          placeholder={placeholder}
+          onChange={(event) => setText(event.target.value)}
+          style={styles.input}
+        />
+      )}
+      {changed ? (
+        <Button variant="primary" disabled={disabled} onClick={() => onCommit(text)}>
+          Save
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Activate
+// ---------------------------------------------------------------------------
+
+function Activate({ companyId, onMessage }: { companyId: string; onMessage: Notify }) {
+  const [busy, setBusy] = useState(false);
+
+  const activate = useCallback(async () => {
+    setBusy(true);
+    const profilesPath = `/api/companies/${companyId}/tools/profiles`;
     try {
-      // 1. Profile. On a repeat press this is the step that used to fail, so a
-      //    conflict is resolved by reusing the profile this plugin owns rather
-      //    than by creating a second one.
       let profileId: string;
-      let profileOutcome: StepOutcome;
+      let profile: StepOutcome;
       try {
         const created = await coreApi<{ id: string }>(profilesPath, {
           method: "POST",
-          body: profileBody,
+          body: {
+            profileKey: PROFILE_KEY,
+            name: "CodeGraph (read-only)",
+            description: "Read-only CodeGraph tools. Every CodeGraph tool is query-only.",
+            status: "active",
+            defaultAction: "deny",
+            entries: TOOL_NAMES.map((toolName) => ({
+              selectorType: "tool_name",
+              effect: "include",
+              toolName: `${PLUGIN_ID}:${toolName}`,
+            })),
+          },
         });
         profileId = created.id;
-        profileOutcome = "created";
+        profile = "created";
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
         if (!isAlreadyExistsMessage(text)) throw error;
-        const listed = await coreApi<unknown>(profilesPath);
-        const existingId = findProfileId(listed, PROFILE_KEY);
-        if (!existingId) {
-          throw new Error(
-            `A tool access record named "${PROFILE_KEY}" already exists but could not be found to reuse: ${text}`,
-          );
-        }
-        profileId = existingId;
-        profileOutcome = "already-existed";
+        const existing = findProfileId(await coreApi<unknown>(profilesPath), PROFILE_KEY);
+        if (!existing) throw error;
+        profileId = existing;
+        profile = "already-existed";
       }
 
-      // 2. Bind at COMPANY scope on purpose. Paperclip keeps only the narrowest
-      //    matching binding tier (narrowestScopeBindings), so an agent-scoped
-      //    binding would silently stop the company profile applying to that
-      //    agent — granting CodeGraph could revoke their other tools.
-      const binding = await attempt(() =>
-        coreApi(`${profilesPath}/${profileId}/bind`, {
+      // Company scope on purpose: Paperclip keeps only the narrowest matching
+      // binding tier, so an agent-scoped binding would silently drop this profile
+      // for that agent — granting CodeGraph could revoke their other tools.
+      let binding: StepOutcome = "created";
+      try {
+        await coreApi(`${profilesPath}/${profileId}/bind`, {
           method: "POST",
           body: { targetType: "company", targetId: companyId, priority: 100 },
-        }),
-      );
+        });
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        if (!isAlreadyExistsMessage(text)) throw error;
+        binding = "already-existed";
+      }
 
-      // 3. The named MCP gateway. Without one, no agent receives the tools even
-      //    with the profile attached and bound.
-      //
-      //    Looked up before creating: `(company_id, slug)` is unique, so a second
-      //    create is rejected — and the message Paperclip returns for that is a
-      //    raw `Failed query: insert into "tool_mcp_gateways" …` carrying none of
-      //    the words a conflict classifier looks for. Looking the gateway up is
-      //    both correct and free of message-parsing.
+      const gatewaysPath = `/api/companies/${companyId}/tools/gateways`;
       let gateway: StepOutcome;
       let existingGateway: { id: string; profileId: string | null } | null = null;
       try {
-        existingGateway = findGateway(
-          await coreApi<unknown>(`/api/companies/${companyId}/tools/gateways`),
-          GATEWAY_SLUG,
-        );
+        existingGateway = findGateway(await coreApi<unknown>(gatewaysPath), GATEWAY_SLUG);
       } catch {
-        // No permission to list, or a shape we do not recognise: fall through to
-        // creating, which is what the previous version did unconditionally.
         existingGateway = null;
       }
 
       if (!existingGateway) {
-        gateway = await attempt(() =>
-          coreApi(`/api/companies/${companyId}/tools/gateways`, {
+        try {
+          await coreApi(gatewaysPath, {
             method: "POST",
             body: { name: GATEWAY_NAME, slug: GATEWAY_SLUG, profileId },
-          }),
-        );
+          });
+          gateway = "created";
+        } catch (error) {
+          const text = error instanceof Error ? error.message : String(error);
+          if (!isAlreadyExistsMessage(text)) throw error;
+          gateway = "already-existed";
+        }
       } else if (existingGateway.profileId !== null && existingGateway.profileId !== profileId) {
-        // The gateway exists but points at a different profile — converge it on
-        // the one this plugin owns, rather than leaving a stale pointer.
         await coreApi(`/api/tool-gateway/gateways/${existingGateway.id}`, {
           method: "PATCH",
           body: { companyId, profileId },
@@ -278,384 +623,141 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
         gateway = "already-existed";
       }
 
-      const summary: ActivationSummary = { profileId, profile: profileOutcome, binding, gateway };
-      toast({ title: "CodeGraph activated", body: describeActivation(summary), tone: "success" });
+      const summary: ActivationSummary = { profileId, profile, binding, gateway };
+      onMessage(describeActivation(summary), "success");
     } catch (error) {
-      // Sanitised at the display boundary only: the classification above needs
-      // the raw text, but a board member must never be shown raw SQL and its
-      // bound parameters.
-      toast({ title: "Could not activate CodeGraph", body: sanitizeErrorMessage(error), tone: "error" });
-    } finally {
-      setBusy(null);
-    }
-  }, [companyId]);
-
-  if (!companyId) {
-    return <p style={styles.muted}>Open this page inside a company to configure CodeGraph.</p>;
-  }
-
-  return (
-    <div style={styles.page}>
-      <h2 style={styles.h2}>
-        CodeGraph{organization ? ` · ${organization}` : context.companyPrefix ? ` · ${context.companyPrefix}` : ""}
-      </h2>
-      <p style={styles.muted}>
-        Code intelligence for this organization&apos;s agents. An agent gets CodeGraph for
-        the repository of the Paperclip project it is working in.
-      </p>
-
-      <section style={styles.card}>
-        <h3 style={styles.h3}>Status</h3>
-        {readinessLoading || (overviewLoading && !overview) ? (
-          <p style={styles.muted}>Checking…</p>
-        ) : readinessError ? (
-          <p style={styles.bad}>Could not check: {sanitizeErrorMessage(readinessError)}</p>
-        ) : readiness ? (
-          <ul style={styles.list}>
-            <StatusLine
-              ok={readiness.enabled}
-              good="CodeGraph is enabled for this company"
-              bad="CodeGraph is disabled — turn it on under Configuration below"
-            />
-            <StatusLine
-              ok={readiness.codegraph.ok}
-              good={`CodeGraph ${readiness.codegraph.version ?? ""} found`}
-              bad={readiness.codegraph.detail}
-            />
-            {/*
-              The repository line reports what this org actually has, from the
-              same read the Repositories section below uses. It previously
-              reported the governance *binding*, which is empty on an org that is
-              working fine — so it claimed no repository existed above a list of
-              one.
-            */}
-            <StatusLine
-              ok={repositories.length > 0 && indexedCount > 0}
-              good={
-                repositories.length === 1
-                  ? `1 repository, ${indexedCount === 1 ? "indexed" : "not indexed yet"}`
-                  : `${repositories.length} repositories, ${indexedCount} indexed`
-              }
-              bad={
-                repositories.length === 0
-                  ? "No repository yet. One appears once a project in this organization has a repository workspace."
-                  : `${repositories.length} repositor${repositories.length === 1 ? "y" : "ies"}, none indexed yet — use Index now below`
-              }
-            />
-            {unavailableCount > 0 ? (
-              <StatusLine
-                ok={false}
-                good=""
-                bad={`${unavailableCount} repositor${unavailableCount === 1 ? "y is" : "ies are"} switched off for this organization`}
-              />
-            ) : null}
-          </ul>
-        ) : null}
-        <div style={styles.row}>
-          <button style={styles.iconButton} onClick={refresh}>
-            Refresh
-          </button>
-          <span style={styles.hintInline}>
-            Re-reads repositories, agents and index state. Also happens when you return to this tab.
-          </span>
-        </div>
-      </section>
-
-      <section style={styles.card}>
-        <h3 style={styles.h3}>Activate</h3>
-        <p style={styles.muted}>
-          Creates the Paperclip tool profile and MCP gateway that make the tools callable.
-          Safe to run twice.
-        </p>
-        <div style={styles.row}>
-          <button
-            style={{ ...styles.button, ...styles.primary }}
-            disabled={busy !== null}
-            onClick={() => void activate()}
-          >
-            {busy === "activate" ? "Activating…" : "Activate CodeGraph"}
-          </button>
-        </div>
-      </section>
-
-      <Configuration companyId={companyId} />
-      <RepositoryAccess companyId={companyId} revision={revision} onChanged={refresh} />
-      <Indexing companyId={companyId} revision={revision} onChanged={refresh} />
-      <AgentExceptions companyId={companyId} revision={revision} onChanged={refresh} />
-
-    </div>
-  );
-}
-
-/**
- * The operator's config, which this page has to own.
- *
- * The host mounts a `settingsPage` slot **instead of** its auto-generated config
- * form, not alongside it (`ui/src/pages/PluginSettings.tsx`: `hasCustomSettingsPage
- * ? <PluginSlotMount/> : hasConfigSchema ? <PluginConfigForm/> : …`). So a plugin
- * that declares one takes responsibility for the whole Configuration tab —
- * including the fields the operator had before. Leaving this out would not have
- * hidden the form; it would have silently removed the ability to turn CodeGraph on.
- *
- * The five fields are the closed `instanceConfigSchema`; saving merges into the
- * stored document so nothing outside this form is dropped.
- */
-function Configuration({ companyId }: { companyId: string }) {
-  const toast = usePluginToast();
-  const path = `/api/plugins/${PLUGIN_ID}/config?companyId=${encodeURIComponent(companyId)}`;
-
-  const [stored, setStored] = useState<Record<string, unknown> | null>(null);
-  const [draft, setDraft] = useState<OperatorConfig | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    coreApi<{ configJson?: unknown } | null>(path)
-      .then((response) => {
-        if (cancelled) return;
-        const document =
-          response && typeof response === "object" && "configJson" in response
-            ? (response as { configJson?: unknown }).configJson
-            : response;
-        setStored(
-          typeof document === "object" && document !== null && !Array.isArray(document)
-            ? (document as Record<string, unknown>)
-            : {},
-        );
-        setDraft(readOperatorConfig(document));
-        setFailure(null);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setFailure(sanitizeErrorMessage(error));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [path]);
-
-  const save = useCallback(async () => {
-    if (!draft) return;
-    setBusy(true);
-    try {
-      // Only the schema's own keys are sent: the server validates this payload
-      // with a closed schema, so an extra key is a rejected request, not a
-      // preserved setting.
-      const { config: configJson, droppedKeys } = operatorConfigForSave(stored, draft);
-      await coreApi(`/api/plugins/${PLUGIN_ID}/config`, {
-        method: "POST",
-        body: { companyId, configJson },
-      });
-      // Re-seed from what was written, so a later save reads the truth rather
-      // than a stale copy of it.
-      setStored(configJson);
-      toast({
-        title: "Configuration saved",
-        ...(droppedKeys.length > 0
-          ? {
-              body: `This plugin no longer uses ${droppedKeys.join(", ")}, so ${droppedKeys.length === 1 ? "it was" : "they were"} removed — ${droppedKeys.length === 1 ? "it is" : "they are"} not part of its settings any more.`,
-              tone: "warn" as const,
-            }
-          : { tone: "success" as const }),
-      });
-    } catch (error) {
-      toast({ title: "That did not work", body: sanitizeErrorMessage(error), tone: "error" });
+      onMessage(sanitizeErrorMessage(error), "error");
     } finally {
       setBusy(false);
     }
-  }, [companyId, draft, stored, toast]);
-
-  if (loading && !draft) {
-    return (
-      <section style={styles.card}>
-        <h3 style={styles.h3}>Configuration</h3>
-        <p style={styles.muted}>Loading…</p>
-      </section>
-    );
-  }
-
-  if (!draft) {
-    return (
-      <section style={styles.card}>
-        <h3 style={styles.h3}>Configuration</h3>
-        <p style={styles.bad}>
-          Could not read the configuration{failure ? `: ${failure}` : ""}. CodeGraph stays on
-          whatever is stored — nothing was changed.
-        </p>
-      </section>
-    );
-  }
-
-  const bound = boundsSummary(draft);
+  }, [companyId, onMessage]);
 
   return (
-    <section style={styles.card}>
-      <h3 style={styles.h3}>Configuration</h3>
-      <p style={styles.muted}>
-        What this plugin may do on this instance. Saved separately for each company.
-      </p>
-
-      <div style={styles.field}>
-        <label style={styles.checkLabel}>
-          <input
-            type="checkbox"
-            checked={draft.enabled}
-            onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
-          />
-          <span>
-            <strong>Enable CodeGraph</strong>
-          </span>
-        </label>
-        <p style={styles.hint}>
-          Turn CodeGraph tools on for this company. While off, every CodeGraph call is denied.
-        </p>
-      </div>
-
-      <div style={styles.field}>
-        <label style={styles.checkLabel}>
-          <input
-            type="checkbox"
-            checked={draft.autoInstall}
-            onChange={(event) => setDraft({ ...draft, autoInstall: event.target.checked })}
-          />
-          <span>
-            <strong>Install CodeGraph automatically</strong>
-          </span>
-        </label>
-        <p style={styles.hint}>
-          Install CodeGraph on the server if it is missing. Off: you must install it yourself.
-        </p>
-      </div>
-
-      <div style={styles.field}>
-        <label style={styles.checkLabel}>
-          <input
-            type="checkbox"
-            checked={draft.autoIndex}
-            onChange={(event) => setDraft({ ...draft, autoIndex: event.target.checked })}
-          />
-          <span>
-            <strong>Build the index automatically</strong>
-          </span>
-        </label>
-        <p style={styles.hint}>
-          Index a repository the first time it is queried. Off: run <code>codegraph init</code>{" "}
-          yourself, or use Index now below.
-        </p>
-      </div>
-
-      <div style={styles.field}>
-        <label style={styles.fieldLabel} htmlFor="codegraph-command">
-          CodeGraph executable
-        </label>
-        <input
-          id="codegraph-command"
-          style={styles.input}
-          value={draft.codegraphCommand}
-          onChange={(event) => setDraft({ ...draft, codegraphCommand: event.target.value })}
-        />
-        <p style={styles.hint}>
-          Set an absolute path if CodeGraph is not on the server&apos;s PATH. Default{" "}
-          <code>codegraph</code>.
-        </p>
-      </div>
-
-      <div style={styles.field}>
-        <label style={styles.fieldLabel} htmlFor="codegraph-roots">
-          Safety boundary: directories CodeGraph may read
-        </label>
-        <textarea
-          id="codegraph-roots"
-          style={styles.textarea}
-          rows={3}
-          value={draft.allowedProjectRoots.join("\n")}
-          placeholder="Leave empty unless more than one organization shares this server"
-          onChange={(event) =>
-            setDraft({
-              ...draft,
-              // One per line: a path picker would be a second authority over
-              // something Paperclip already owns, and these are containment
-              // roots, not repository choices.
-              allowedProjectRoots: event.target.value
-                .split("\n")
-                .map((line) => line.trim())
-                .filter((line) => line.length > 0),
-            })
-          }
-        />
-        <p style={styles.hint}>
-          <strong>What it is:</strong> a ceiling on where this plugin may look for code on
-          the server. Any repository outside these directories is refused, even if an agent
-          is working in it. It is not a list of repositories — those are detected from
-          Paperclip projects, and there is nothing to add here for them.
-        </p>
-        <p style={styles.hint}>
-          <strong>Why it exists:</strong> the plugin runs on the Paperclip host and can read
-          files. With the box empty it will read whichever repository a project points at,
-          anywhere on the disk. Setting one directory per tenant keeps one organization&apos;s
-          CodeGraph from reaching another&apos;s code — {bound}.
-        </p>
-        <p style={styles.hint}>
-          <strong>When to set it:</strong> if more than one organization shares this Paperclip
-          instance. On a single-tenant instance, leave it empty.
-        </p>
-      </div>
-
-      <div style={styles.row}>
-        <button
-          style={{ ...styles.button, ...styles.primary }}
-          disabled={busy}
-          onClick={() => void save()}
-        >
-          {busy ? "Saving…" : "Save configuration"}
-        </button>
-        <button
-          style={styles.button}
-          disabled={busy}
-          onClick={() => setDraft(readOperatorConfig(stored))}
-        >
-          Reset
-        </button>
-      </div>
-    </section>
+    <Section
+      title="Make the tools callable"
+      description="Creates the Paperclip tool profile and MCP gateway that allow these tools at all. Safe to run twice — it reuses what it already made."
+      control={
+        <Button variant="primary" disabled={busy} onClick={() => void activate()}>
+          {busy ? "Activating…" : "Activate"}
+        </Button>
+      }
+    />
   );
 }
 
-/** A one-line summary of what the current roots actually mean. */
-function boundsSummary(draft: OperatorConfig): string {
-  return draft.allowedProjectRoots.length === 0
-    ? "with none set, a repository may live anywhere"
-    : `${draft.allowedProjectRoots.length} root${
-        draft.allowedProjectRoots.length === 1 ? "" : "s"
-      } configured`;
+// ---------------------------------------------------------------------------
+// Repositories
+// ---------------------------------------------------------------------------
+
+function Repositories({
+  companyId,
+  revision,
+  onChanged,
+  onMessage,
+}: {
+  companyId: string;
+  revision: number;
+  onChanged: () => void;
+  onMessage: Notify;
+}) {
+  const { data, loading, refresh } = usePluginData<{
+    repositories: RepoRow[];
+    skippedProjects?: number;
+  }>(DATA_KEYS.graphProjects, { companyId, revision });
+  const setAccess = usePluginAction(ACTION_KEYS.setRepositoryAccess);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const repositories = data?.repositories ?? [];
+  const skipped = data?.skippedProjects ?? 0;
+
+  const toggle = useCallback(
+    async (repo: RepoRow, blocked: boolean) => {
+      setBusy(repo.projectId);
+      try {
+        await setAccess({ companyId, projectId: repo.projectId, blocked });
+        refresh();
+        onChanged();
+        onMessage(
+          blocked
+            ? `Agents working in ${repo.name} no longer get CodeGraph.`
+            : `${repo.name} is available to CodeGraph again.`,
+          blocked ? "warn" : "success",
+        );
+      } catch (error) {
+        onMessage(sanitizeErrorMessage(error), "error");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [companyId, onChanged, onMessage, refresh, setAccess],
+  );
+
+  return (
+    <Section
+      title="Repositories"
+      description="Which repositories CodeGraph may read. An agent reaches the one its Paperclip project uses, so this is set here rather than per agent — and switching one off can only narrow."
+    >
+      {loading && repositories.length === 0 ? (
+        <p style={styles.muted}>Loading…</p>
+      ) : repositories.length === 0 ? (
+        <p style={styles.muted}>
+          No repository yet. One appears when a project in this organization has a workspace.
+        </p>
+      ) : (
+        <ul style={styles.rows}>
+          {repositories.map((repo) => (
+            <li key={repo.projectId} style={styles.row}>
+              <div style={styles.rowText}>
+                <span style={styles.rowTitle}>
+                  {repo.name}
+                  {repo.repoName && repo.repoName !== repo.name ? (
+                    <span style={styles.rowAside}> · {repo.repoName}</span>
+                  ) : null}
+                </span>
+                <span style={styles.rowMeta}>
+                  {repo.indexed
+                    ? repo.fileCount === null || repo.fileCount === undefined
+                      ? "Indexed"
+                      : `Indexed · ${repo.fileCount} files, ${repo.nodeCount ?? "?"} symbols`
+                    : "Not indexed"}
+                </span>
+              </div>
+              <Switch
+                checked={repo.blocked !== true}
+                disabled={busy !== null}
+                label={`Allow CodeGraph to read ${repo.name}`}
+                onChange={(next) => void toggle(repo, !next)}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+      {skipped > 0 ? (
+        <p style={styles.note}>
+          {skipped} other project{skipped === 1 ? "" : "s"} here {skipped === 1 ? "is" : "are"} not
+          listed, because {skipped === 1 ? "it has" : "they have"} no repository workspace.
+        </p>
+      ) : null}
+    </Section>
+  );
 }
 
-/**
- * This org's repositories with their index state, and the two index actions.
- *
- * `repositories` reports file and node counts, which means it runs
- * `codegraph status` per repository — correct here, where an operator is
- * looking at index health, and deliberately not what the sidebar uses.
- */
+// ---------------------------------------------------------------------------
+// Indexing
+// ---------------------------------------------------------------------------
+
 function Indexing({
   companyId,
   revision,
   onChanged,
+  onMessage,
 }: {
   companyId: string;
-  /** Bumped when the page wants a re-read, e.g. on returning to the tab. */
   revision: number;
-  /** Bump to make the whole page re-read after a change. */
   onChanged: () => void;
+  onMessage: Notify;
 }) {
-  const toast = usePluginToast();
-  const { data: repos, loading, refresh } = usePluginData<{ repositories: RepoRow[] }>(
+  const { data, loading, refresh } = usePluginData<{ repositories: RepoRow[] }>(
     DATA_KEYS.repositories,
     { companyId, revision },
   );
@@ -663,352 +765,195 @@ function Indexing({
   const [busy, setBusy] = useState<string | null>(null);
 
   const run = useCallback(
-    async (projectId: string, reindex: boolean) => {
-      setBusy(`${projectId}:${reindex ? "rebuild" : "index"}`);
+    async (repo: RepoRow, reindex: boolean) => {
+      setBusy(`${repo.projectId}:${reindex ? "rebuild" : "index"}`);
       try {
-        await indexNow({ companyId, projectId, reindex });
-        // The counts and the index state are wrong the instant this returns, so
-        // re-read rather than telling the operator to reopen the page.
+        await indexNow({ companyId, projectId: repo.projectId, reindex });
         refresh();
         onChanged();
-        toast({
-          title: reindex ? "Index rebuilt" : "Index built",
-          body: "The counts below are updated.",
-          tone: "success",
-        });
+        onMessage(
+          reindex ? `Rebuilt the index for ${repo.name}.` : `Indexed ${repo.name}.`,
+          "success",
+        );
       } catch (error) {
-        toast({ title: "That did not work", body: sanitizeErrorMessage(error), tone: "error" });
+        onMessage(sanitizeErrorMessage(error), "error");
       } finally {
         setBusy(null);
       }
     },
-    [companyId, indexNow, onChanged, refresh, toast],
+    [companyId, indexNow, onChanged, onMessage, refresh],
   );
-
-  const repositories = repos?.repositories ?? [];
-
-  return (
-    <section style={styles.card}>
-      <h3 style={styles.h3}>Indexing</h3>
-      <p style={styles.muted}>
-        The index is what the graph and the tools read — a repository with no index answers
-        nothing, however many tools are enabled. Building one is explicit because it reads
-        the whole repository.
-      </p>
-      {loading && repositories.length === 0 ? (
-        <p style={styles.muted}>Loading…</p>
-      ) : repositories.length === 0 ? (
-        <p style={styles.muted}>
-          No repositories yet. One appears once a project in this company has a workspace.
-        </p>
-      ) : (
-        repositories.map((repo) => (
-          <div key={repo.projectId} style={styles.repoCard}>
-            <div style={styles.repoHead}>
-              <strong>{repo.name}</strong>
-              <span style={repo.indexed ? styles.good : styles.bad}>
-                {repo.indexed
-                  ? `${repo.fileCount ?? "?"} files · ${repo.nodeCount ?? "?"} nodes`
-                  : "Not indexed"}
-              </span>
-            </div>
-            <div style={styles.row}>
-              <button
-                style={styles.button}
-                disabled={busy !== null}
-                onClick={() => void run(repo.projectId, false)}
-              >
-                {busy === `${repo.projectId}:index` ? "Indexing…" : "Index now"}
-              </button>
-              <button
-                style={styles.button}
-                disabled={busy !== null}
-                onClick={() => void run(repo.projectId, true)}
-              >
-                {busy === `${repo.projectId}:rebuild` ? "Rebuilding…" : "Rebuild"}
-              </button>
-            </div>
-          </div>
-        ))
-      )}
-    </section>
-  );
-}
-
-/**
- * The primary access control: which of this org's repositories CodeGraph may read.
- *
- * This exists because gating by agent was the wrong primary. An agent's reach
- * already follows the Paperclip project it is working in — that is the
- * organisational fact, and it changes when someone changes team. An agent list is
- * a copy of that fact which does not update when the fact does, so access
- * outlives the reason it was granted. A repository switch is derived from work
- * the operator already did in Paperclip, and cannot drift.
- *
- * It also scales: this org has ~77 agents and two repositories.
- */
-function RepositoryAccess({
-  companyId,
-  revision,
-  onChanged,
-}: {
-  companyId: string;
-  /** Bumped when the page wants a re-read, e.g. on returning to the tab. */
-  revision: number;
-  /** Bump to make the whole page re-read after a change. */
-  onChanged: () => void;
-}) {
-  const toast = usePluginToast();
-  const { data, loading, refresh } = usePluginData<{
-    organization?: string | null;
-    repositories: RepoRow[];
-    skippedProjects?: number;
-    detail?: string;
-  }>(DATA_KEYS.graphProjects, { companyId, revision });
-  const setRepositoryAccess = usePluginAction(ACTION_KEYS.setRepositoryAccess);
-  const [busy, setBusy] = useState<string | null>(null);
 
   const repositories = data?.repositories ?? [];
 
-  const toggle = useCallback(
-    async (projectId: string, blocked: boolean) => {
-      setBusy(projectId);
-      try {
-        await setRepositoryAccess({ companyId, projectId, blocked });
-        // Re-read here for this section, and tell the page so Status agrees.
-        refresh();
-        onChanged();
-        toast({
-          title: blocked ? "Repository switched off" : "Repository switched on",
-          body: blocked
-            ? "Agents working in it get no CodeGraph tools."
-            : "CodeGraph is available for that repository again.",
-          tone: blocked ? "warn" : "success",
-        });
-      } catch (error) {
-        toast({ title: "That did not work", body: sanitizeErrorMessage(error), tone: "error" });
-      } finally {
-        setBusy(null);
-      }
-    },
-    [companyId, onChanged, refresh, setRepositoryAccess, toast],
-  );
-
-  const skipped = data?.skippedProjects ?? 0;
-
   return (
-    <section style={styles.card}>
-      <h3 style={styles.h3}>Repositories</h3>
-      <p style={styles.muted}>
-        The repositories this organization may read. Availability follows the Paperclip
-        project an agent is working in, so it is set per repository rather than per agent:
-        switching one off is the one edit here, and it can only narrow.
-      </p>
+    <Section
+      title="Index"
+      description="The index is what everything reads — a repository with no index answers nothing. Building one reads the whole repository, which is why it happens when you ask rather than by itself."
+    >
       {loading && repositories.length === 0 ? (
         <p style={styles.muted}>Loading…</p>
       ) : repositories.length === 0 ? (
-        <p style={styles.muted}>
-          {data?.detail ??
-            "No repositories yet. One appears once a project in this company has a repository workspace."}
-        </p>
+        <p style={styles.muted}>Nothing to index yet.</p>
       ) : (
-        <ul style={styles.list}>
+        <ul style={styles.rows}>
           {repositories.map((repo) => (
-            <li key={repo.projectId} style={styles.checkRow}>
-              <label style={styles.checkLabel}>
-                <input
-                  type="checkbox"
-                  // Checked means available, so the box reads as "CodeGraph here".
-                  checked={repo.blocked !== true}
-                  disabled={busy !== null}
-                  onChange={(event) => void toggle(repo.projectId, !event.target.checked)}
-                />
-                <span>
-                  {repo.name}
-                  {repo.repoName && repo.repoName !== repo.name ? (
-                    <span style={styles.hintInline}> ({repo.repoName})</span>
-                  ) : null}
-                  {repo.indexed ? null : (
-                    <span style={styles.hintInline}> — not indexed yet</span>
-                  )}
+            <li key={repo.projectId} style={styles.row}>
+              <div style={styles.rowText}>
+                <span style={styles.rowTitle}>{repo.name}</span>
+                <span style={styles.rowMeta}>
+                  {repo.indexed
+                    ? `${repo.fileCount ?? "?"} files · ${repo.nodeCount ?? "?"} symbols`
+                    : "Not indexed yet"}
                 </span>
-              </label>
+              </div>
+              <div style={styles.rowActions}>
+                <Button disabled={busy !== null} onClick={() => void run(repo, false)}>
+                  {busy === `${repo.projectId}:index` ? "Indexing…" : "Index now"}
+                </Button>
+                <Button
+                  disabled={busy !== null}
+                  title="Discard the index and build it again from scratch"
+                  onClick={() => void run(repo, true)}
+                >
+                  {busy === `${repo.projectId}:rebuild` ? "Rebuilding…" : "Rebuild"}
+                </Button>
+              </div>
             </li>
           ))}
         </ul>
       )}
-      {skipped > 0 ? (
-        <p style={styles.hint}>
-          {skipped} other project{skipped === 1 ? "" : "s"} in this organization {skipped === 1 ? "is" : "are"}{" "}
-          not listed: {skipped === 1 ? "it has" : "they have"} no repository workspace, so there is
-          nothing for CodeGraph to read.
-        </p>
-      ) : null}
-    </section>
+    </Section>
   );
 }
 
-/**
- * Per-agent exceptions.
- *
- * Deliberately secondary, and collapsed by default. Agents already reach the
- * repositories their projects use, so there is nothing to grant here — this is
- * for revoking for one agent in the cases the derived rules cannot express, such
- * as a contractor whose access should not follow their project membership.
- *
- * Kept as an explicit list rather than removed, because "revoke for one agent"
- * is a real need; kept demoted because presenting it as the main control implied
- * that access is granted by ticking, and it never was: Paperclip denies these
- * tools by default until a tool profile allows them.
- */
-function AgentExceptions({
+// ---------------------------------------------------------------------------
+// Exceptions
+// ---------------------------------------------------------------------------
+
+function Exceptions({
   companyId,
   revision,
   onChanged,
+  onMessage,
 }: {
   companyId: string;
-  /** Bumped when the page wants a re-read, e.g. on returning to the tab. */
   revision: number;
-  /** Bump to make the whole page re-read after a change. */
   onChanged: () => void;
+  onMessage: Notify;
 }) {
-  const toast = usePluginToast();
-  const [open, setOpen] = useState(false);
-  const { data: access, refresh: refreshAccess } = usePluginData<{
-    agents: AgentRow[];
-    toolCount: number;
-  }>(DATA_KEYS.access, { companyId, revision });
+  const { data: access, refresh: refreshAccess } = usePluginData<{ agents: AgentRow[] }>(
+    DATA_KEYS.access,
+    { companyId, revision },
+  );
   const { data: agents } = usePluginData<{ agents: AgentRow[] }>(DATA_KEYS.agents, {
     companyId,
     revision,
   });
   const setAgentAccess = usePluginAction(ACTION_KEYS.setAgentAccess);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
 
   const rows = access?.agents ?? agents?.agents ?? [];
-  const [busy, setBusy] = useState<string | null>(null);
-
-  const revokedCount = rows.filter((agent) => agent.enabled === false).length;
-
-  // Only agents that are actually allowed matter: counting a revoked agent as a
-  // delivery gap would report a problem where the operator made a choice.
-  const allowed = rows.filter((agent) => agent.enabled !== false);
-  const mcpGap = {
-    noClient: allowed.filter((agent) => agent.mcpClientLoaded !== true).length,
-    noConfig: allowed.filter(
-      (agent) => agent.mcpClientLoaded === true && agent.mcpConfigPassed !== true,
-    ).length,
-    get count() {
-      return this.noClient + this.noConfig;
-    },
-  };
+  const revoked = rows.filter((agent) => agent.enabled === false).length;
+  const noClient = rows.filter(
+    (agent) => agent.enabled !== false && agent.mcpClientLoaded !== true,
+  ).length;
+  const noConfig = rows.filter(
+    (agent) =>
+      agent.enabled !== false && agent.mcpClientLoaded === true && agent.mcpConfigPassed !== true,
+  ).length;
 
   const toggle = useCallback(
-    async (agentId: string, enabled: boolean) => {
-      setBusy(agentId);
+    async (agent: AgentRow, enabled: boolean) => {
+      setBusy(agent.id);
       try {
-        await setAgentAccess({ companyId, agentId, enabled });
+        await setAgentAccess({ companyId, agentId: agent.id, enabled });
         refreshAccess();
-        toast({
-          title: enabled ? "Access restored" : "Access revoked",
-          body: enabled
-            ? "That agent reaches the repositories its projects use again."
-            : "That agent no longer gets CodeGraph tools, wherever it works.",
-          tone: enabled ? "success" : "warn",
-        });
+        onChanged();
+        onMessage(
+          enabled
+            ? `${agent.name} can use CodeGraph again.`
+            : `${agent.name} no longer gets CodeGraph tools.`,
+          enabled ? "success" : "warn",
+        );
       } catch (error) {
-        toast({ title: "That did not work", body: sanitizeErrorMessage(error), tone: "error" });
+        onMessage(sanitizeErrorMessage(error), "error");
       } finally {
         setBusy(null);
       }
     },
-    [companyId, refreshAccess, setAgentAccess, toast],
+    [companyId, onChanged, onMessage, refreshAccess, setAgentAccess],
   );
 
   return (
-    <section style={styles.card}>
-      <h3 style={styles.h3}>Exceptions</h3>
-      <p style={styles.muted}>
-        Every agent reaches the repositories its projects use. This is only for taking that
-        away from a specific agent
-        {revokedCount > 0 ? ` — ${revokedCount} currently revoked` : ""}. Nothing here can
-        grant access, so there is nothing to configure unless you need an exception.
-      </p>
+    <Section
+      title="Exceptions"
+      description="Every agent reaches the repositories its projects use, so there is nothing to grant here. This is only for taking that away from one agent."
+      control={
+        rows.length > 0 ? (
+          <Button onClick={() => setOpen((value) => !value)}>
+            {open ? "Hide agents" : `Show ${rows.length} agents`}
+          </Button>
+        ) : null
+      }
+    >
+      {revoked > 0 ? (
+        <p style={styles.note}>
+          {revoked} agent{revoked === 1 ? " is" : "s are"} revoked.
+        </p>
+      ) : null}
 
-      <button style={styles.button} onClick={() => setOpen((value) => !value)}>
-        {open ? "Hide agents" : `Show ${rows.length} agents`}
-      </button>
-
-      {/*
-        The gap that made two separate runs report "CodeGraph is not available"
-        for a plugin whose governance was entirely correct: an active profile
-        delivers nothing on its own. A `pi_local` agent needs an MCP client, and
-        that client needs to be pointed at the company's MCP config — otherwise it
-        reads its own default paths, finds nothing, and loads zero servers.
-      */}
-      {mcpGap.count > 0 ? (
-        <div style={styles.warning}>
+      {noClient + noConfig > 0 ? (
+        <div style={styles.banner}>
           <strong>
-            {mcpGap.count} of {rows.length} agent{mcpGap.count === 1 ? "" : "s"} cannot
-            receive these tools yet.
+            {noClient + noConfig} of {rows.length} agents cannot receive these tools yet.
           </strong>
-          <p style={styles.hint}>
-            The profile above is active, but an active profile only makes the tools
-            <em> permitted</em>. An agent also needs an MCP client, and it needs to be
-            pointed at this company&apos;s MCP config.
-            {mcpGap.noClient > 0
-              ? ` ${mcpGap.noClient} load no MCP client at all (no pi-mcp-adapter in their arguments).`
-              : ""}
-            {mcpGap.noConfig > 0
-              ? ` ${mcpGap.noConfig} load one but never pass --mcp-config, so it reads its own default paths and finds nothing.`
-              : ""}
+          <p style={styles.bannerBody}>
+            An active profile only makes the tools <em>allowed</em>. An agent also needs an MCP
+            client pointed at this organization&apos;s MCP config before the tools can reach it.
+            {noClient > 0 ? ` ${noClient} load no MCP client at all.` : ""}
+            {noConfig > 0 ? ` ${noConfig} load one but never pass --mcp-config.` : ""}
           </p>
-          <p style={styles.hint}>
-            Fix per agent in its adapter config: <code>-e …/pi-mcp-adapter --mcp-config
-            /paperclip/instances/default/companies/&lt;company&gt;/mcp.json --tools
-            …,mcp</code>, then add CodeGraph to that file as a server. Restart the agent
-            for it to take effect.
+          <p style={styles.bannerBody}>
+            Fix it per agent in its adapter settings, then restart that agent. Until then these
+            agents can still reach CodeGraph through the plugin API — governed and audited — but
+            they will not see the tools.
           </p>
-          {mcpGap.noClient > 0 ? (
-            <p style={styles.hint}>
-              Without an MCP client these {mcpGap.noClient} agent
-              {mcpGap.noClient === 1 ? " reaches" : "s reach"} CodeGraph only through
-              the plugin API, which is governed and audited but must be called
-              explicitly rather than appearing as a tool.
-            </p>
-          ) : null}
         </div>
       ) : rows.length > 0 ? (
-        <p style={styles.hint}>
-          All {rows.length} agents load an MCP client pointed at this company&apos;s MCP
-          config, so the permitted tools can reach them.
+        <p style={styles.note}>
+          All {rows.length} agents load an MCP client pointed at this organization&apos;s MCP
+          config.
         </p>
       ) : null}
 
       {open ? (
-        rows.length > 0 ? (
-          <ul style={styles.list}>
-            {rows.map((agent) => (
-              <li key={agent.id} style={styles.checkRow}>
-                <label style={styles.checkLabel}>
-                  <input
-                    type="checkbox"
-                    // Checked means the agent still has access. Absent override
-                    // means allowed, so the default must read as on.
-                    checked={agent.enabled !== false}
-                    disabled={busy !== null}
-                    onChange={(event) => void toggle(agent.id, event.target.checked)}
-                  />
-                  {agent.name}
-                </label>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p style={styles.muted}>No agents in this company yet.</p>
-        )
+        <ul style={styles.rows}>
+          {rows.map((agent) => (
+            <li key={agent.id} style={styles.row}>
+              <div style={styles.rowText}>
+                <span style={styles.rowTitle}>{agent.name}</span>
+                <span style={styles.rowMeta}>
+                  {agent.enabled === false
+                    ? "Revoked"
+                    : agent.mcpClientLoaded !== true
+                      ? "No MCP client"
+                      : agent.mcpConfigPassed !== true
+                        ? "MCP client without a config"
+                        : "Can use CodeGraph"}
+                </span>
+              </div>
+              <Switch
+                checked={agent.enabled !== false}
+                disabled={busy !== null}
+                label={`Let ${agent.name} use CodeGraph`}
+                onChange={(next) => void toggle(agent, next)}
+              />
+            </li>
+          ))}
+        </ul>
       ) : null}
-    </section>
+    </Section>
   );
 }
-
-export type { AgentRow, Readiness, RepoRow };

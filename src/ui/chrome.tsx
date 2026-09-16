@@ -1,156 +1,235 @@
 /**
- * Shared chrome for every CodeGraph surface.
+ * Shared chrome for the CodeGraph surfaces.
  *
- * Inline styles only, and no import of the host's `ui/src` internals: a plugin
- * bundle that reached into the host's design system would be pinned to a
- * Paperclip version it cannot test against. Colours are read through the host's
- * CSS custom properties with a fallback, so the surfaces follow the operator's
- * theme — including dark mode — without knowing what the theme is.
+ * Two things are deliberate here.
+ *
+ * **The tokens are the host's.** Every colour is a Paperclip custom property, so
+ * light and dark both work without this plugin knowing which is active. A plugin
+ * that repaints itself in another tool's palette reads as a foreign window inside
+ * Paperclip and ignores the theme the operator chose.
+ *
+ * **The rhythm is the host's too**, taken from its own General settings page
+ * (`ui/src/pages/InstanceGeneralSettings.tsx`) and its `ToggleSwitch`
+ * (`ui/src/components/ui/toggle-switch.tsx`) rather than invented: a reading-width
+ * column of sections, each a heading and a sentence with its control on the right
+ * at `flex items-start justify-between gap-4`, and a capsule switch that writes
+ * immediately. Those files are the reference; the numbers below are copied from
+ * them, including the switch's use of the status green rather than `primary`,
+ * which that component records as a deliberate ruling.
+ *
+ * Inline styles only. A plugin must not import the host's `ui/src` internals, so
+ * nothing here reaches into its Tailwind or its components.
  */
 
 import type { CSSProperties } from "react";
 
+/** The host's design tokens, with fallbacks so a renamed one is still legible. */
+export const ui = {
+  background: "var(--background, #ffffff)",
+  foreground: "var(--foreground, #16150f)",
+  card: "var(--card, #ffffff)",
+  muted: "var(--muted, rgba(0,0,0,0.04))",
+  mutedForeground: "var(--muted-foreground, rgba(0,0,0,0.55))",
+  border: "var(--border, rgba(0,0,0,0.10))",
+  input: "var(--input, rgba(0,0,0,0.12))",
+  primary: "var(--primary, #16150f)",
+  primaryForeground: "var(--primary-foreground, #ffffff)",
+  accent: "var(--accent, rgba(0,0,0,0.05))",
+  destructive: "var(--destructive, #dc2626)",
+  success: "var(--success, #16a34a)",
+  /** The host's status green, which its own switch uses for the on state. */
+  statusDone: "var(--status-task-done, #16a34a)",
+  fontSans: 'var(--font-sans, "InterVariable", Inter, ui-sans-serif, system-ui, sans-serif)',
+  fontMono: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+} as const;
+
+/**
+ * A line of status: a tick or a cross, then what it means.
+ *
+ * The `bad` sentence is required rather than optional, because a cross with no
+ * explanation is the failure mode this whole page exists to avoid.
+ */
 export function StatusLine({ ok, good, bad }: { ok: boolean; good: string; bad: string }) {
   return (
     <li style={styles.statusRow}>
       <span aria-hidden style={ok ? styles.tick : styles.cross}>
         {ok ? "✓" : "✗"}
       </span>
-      <span style={ok ? undefined : styles.muted}>{ok ? good : bad}</span>
+      <span style={ok ? styles.statusGood : styles.statusBad}>{ok ? good : bad}</span>
     </li>
   );
 }
 
 export const styles: Record<string, CSSProperties> = {
-  page: { maxWidth: 720, fontFamily: "inherit", color: "inherit" },
-  h2: { fontSize: 18, fontWeight: 600, margin: "0 0 4px" },
-  h3: { fontSize: 14, fontWeight: 600, margin: "0 0 8px" },
-  h4: {
-    fontSize: 12,
-    fontWeight: 600,
-    margin: "16px 0 4px",
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-  },
-  muted: { color: "var(--muted-foreground, #6b7280)", fontSize: 13 },
-  card: {
-    border: "1px solid var(--border, #e5e7eb)",
-    borderRadius: 8,
-    padding: 16,
-    marginTop: 16,
-  },
-  /** A card inside a card: one repository within the Repositories section. */
-  repoCard: {
-    border: "1px solid var(--border, #e5e7eb)",
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 10,
-  },
-  repoHead: {
+  // -- Page ---------------------------------------------------------------
+  /**
+   * A reading column of spaced sections, as the host's settings pages are: no card
+   * around each section, because space separates them rather than borders.
+   */
+  page: {
+    maxWidth: 896,
     display: "flex",
-    justifyContent: "space-between",
-    gap: 8,
-    fontSize: 13,
-    marginBottom: 8,
+    flexDirection: "column",
+    gap: 32,
+    fontFamily: "inherit",
+    color: "inherit",
   },
-  list: { listStyle: "none", padding: 0, margin: "8px 0 0" },
-  statusRow: { display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 6, fontSize: 13 },
-  checkRow: { marginBottom: 4 },
-  checkLabel: { display: "flex", gap: 8, alignItems: "center", fontSize: 13, cursor: "pointer" },
-  tick: { color: "var(--success, #16a34a)" },
-  cross: { color: "var(--destructive, #dc2626)" },
-  good: { color: "var(--success, #16a34a)", fontSize: 13 },
-  bad: { color: "var(--destructive, #dc2626)", fontSize: 13 },
+  title: { display: "flex", flexDirection: "column", gap: 6 },
+  h1: { fontSize: 18, fontWeight: 600, margin: 0, letterSpacing: -0.2 },
+  h2: { fontSize: 14, fontWeight: 600, margin: 0 },
+  lead: { fontSize: 14, color: ui.mutedForeground, margin: 0, lineHeight: 1.5 },
+  body: { fontSize: 14, color: ui.mutedForeground, margin: 0, lineHeight: 1.5 },
+  note: { fontSize: 13, color: ui.mutedForeground, margin: 0, lineHeight: 1.5 },
+  muted: { fontSize: 14, color: ui.mutedForeground, margin: 0 },
+
+  // -- Section ------------------------------------------------------------
+  section: { display: "flex", flexDirection: "column", gap: 12 },
+  /** Heading left, control right — the host's split row. */
+  sectionSplit: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 16,
+  },
+  sectionStack: { display: "flex", flexDirection: "column" },
+  sectionText: { display: "flex", flexDirection: "column", gap: 6, maxWidth: 672 },
+  sectionBody: { display: "flex", flexDirection: "column", gap: 8 },
+
+  // -- Rows ---------------------------------------------------------------
+  /** One setting per row, with its switch or buttons on the right. */
+  rows: { listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column" },
+  row: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 16,
+    padding: "10px 0",
+    borderBottom: `1px solid ${ui.border}`,
+  },
+  rowText: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 },
+  rowTitle: { fontSize: 14, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis" },
+  rowAside: { color: ui.mutedForeground, fontWeight: 400 },
+  rowMeta: { fontSize: 12.5, color: ui.mutedForeground, fontFamily: ui.fontMono },
+  rowActions: { display: "flex", gap: 8, flex: "0 0 auto" },
+
+  // -- Status list --------------------------------------------------------
+  list: { listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 6 },
+  statusRow: { display: "flex", gap: 8, alignItems: "flex-start", fontSize: 14, lineHeight: 1.5 },
+  statusGood: {},
+  statusBad: { color: ui.mutedForeground },
+  tick: { color: ui.success, flex: "0 0 auto" },
+  cross: { color: ui.destructive, flex: "0 0 auto" },
+
+  // -- Controls -----------------------------------------------------------
+  /**
+   * The switch, matching the host's `ToggleSwitch`: a `h-5 w-11` capsule with a
+   * `border-2` track and an oval thumb. When on it uses the status green rather
+   * than `primary` — copied deliberately, since that component records the choice
+   * as a ruling not to be swapped back.
+   */
+  switch: {
+    position: "relative",
+    display: "inline-flex",
+    alignItems: "center",
+    flex: "0 0 auto",
+    width: 44,
+    height: 20,
+    padding: 0,
+    borderRadius: 999,
+    border: "2px solid transparent",
+    cursor: "pointer",
+    transition: "background-color 150ms ease, border-color 150ms ease",
+  },
+  switchOn: { background: ui.statusDone, borderColor: ui.statusDone },
+  switchOff: { background: ui.input },
+  switchDisabled: { opacity: 0.5, cursor: "not-allowed" },
+  thumb: {
+    display: "inline-block",
+    width: 16,
+    height: 16,
+    borderRadius: 999,
+    background: ui.background,
+    boxShadow: "0 1px 2px rgba(0,0,0,0.15)",
+    transition: "transform 150ms ease",
+    pointerEvents: "none",
+  },
+
+  /** The host's own button: `h-9 rounded-md border`. */
+  button: {
+    height: 36,
+    padding: "0 14px",
+    borderRadius: 6,
+    border: `1px solid ${ui.border}`,
+    background: ui.background,
+    color: "inherit",
+    fontSize: 13,
+    fontWeight: 500,
+    cursor: "pointer",
+    fontFamily: "inherit",
+    whiteSpace: "nowrap",
+  },
+  buttonPrimary: { background: ui.primary, color: ui.primaryForeground, borderColor: "transparent" },
+  buttonDisabled: { opacity: 0.5, cursor: "not-allowed" },
+
+  field: { display: "flex", gap: 8, alignItems: "flex-start", maxWidth: 672 },
   input: {
+    flex: "1 1 auto",
     width: "100%",
     boxSizing: "border-box",
-    padding: "8px 10px",
+    height: 36,
+    padding: "0 12px",
     borderRadius: 6,
-    border: "1px solid var(--border, #e5e7eb)",
-    background: "var(--background, transparent)",
+    border: `1px solid ${ui.input}`,
+    background: "transparent",
     color: "inherit",
     fontSize: 13,
     fontFamily: "inherit",
   },
   textarea: {
-    width: "100%",
+    flex: "1 1 auto",
     boxSizing: "border-box",
-    padding: "8px 10px",
+    padding: "8px 12px",
     borderRadius: 6,
-    border: "1px solid var(--border, #e5e7eb)",
-    background: "var(--background, transparent)",
-    color: "inherit",
-    fontSize: 13,
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-    resize: "vertical",
-  },
-  /** A block that groups a label, its control and its explanation. */
-  field: { marginBottom: 18 },
-  fieldLabel: { display: "block", fontSize: 13, fontWeight: 500, marginBottom: 4 },
-  /** The supporting line under a control: the part operators actually read. */
-  hint: {
-    color: "var(--muted-foreground, #6b7280)",
-    fontSize: 12,
-    margin: "4px 0 0",
-    lineHeight: 1.45,
-  },
-  /**
-   * A callout for a state the operator has to act on.
-   *
-   * Uses the host's muted surface and its border rather than a hardcoded amber,
-   * so it reads correctly in both themes.
-   */
-  warning: {
-    border: "1px solid var(--border, #e5e7eb)",
-    borderLeft: "3px solid var(--primary, #16150f)",
-    borderRadius: 8,
-    background: "var(--muted, rgba(0,0,0,0.03))",
-    padding: "12px 14px",
-    marginTop: 12,
-    fontSize: 13,
-  },
-  /** A quiet aside inside a label, e.g. the repository name beside a project name. */
-  hintInline: { color: "var(--muted-foreground, #6b7280)", fontSize: 12 },
-  row: { display: "flex", gap: 12, alignItems: "center", marginTop: 12, flexWrap: "wrap" },
-  repoRow: { display: "flex", gap: 8, alignItems: "center", marginBottom: 8 },
-  iconButton: {
-    padding: "6px 10px",
-    borderRadius: 6,
-    border: "1px solid var(--border, #e5e7eb)",
+    border: `1px solid ${ui.input}`,
     background: "transparent",
     color: "inherit",
-    fontSize: 12,
-    cursor: "pointer",
-    fontFamily: "inherit",
-    whiteSpace: "nowrap",
-  },
-  button: {
-    padding: "8px 14px",
-    borderRadius: 6,
-    border: "1px solid var(--border, #e5e7eb)",
-    background: "var(--background, transparent)",
-    color: "inherit",
     fontSize: 13,
-    cursor: "pointer",
-    fontFamily: "inherit",
+    fontFamily: ui.fontMono,
+    resize: "vertical",
   },
-  primary: {
-    background: "var(--primary, #111827)",
-    color: "var(--primary-foreground, #ffffff)",
-    border: "1px solid transparent",
+
+  // -- Callouts -----------------------------------------------------------
+  /** One banner for a failure, rather than a message beside each control. */
+  errorBanner: {
+    border: `1px solid ${ui.destructive}`,
+    background: ui.muted,
+    color: ui.destructive,
+    borderRadius: 6,
+    padding: "8px 12px",
+    fontSize: 13,
+    lineHeight: 1.5,
+  },
+  /** A callout for something the operator has to act on. */
+  banner: {
+    border: `1px solid ${ui.border}`,
+    borderLeft: `3px solid ${ui.primary}`,
+    borderRadius: 8,
+    background: ui.muted,
+    padding: "12px 14px",
+    fontSize: 13,
+  },
+  bannerBody: {
+    margin: "6px 0 0",
+    color: ui.mutedForeground,
+    fontSize: 12.5,
+    lineHeight: 1.5,
   },
 
   // -- Nav column ---------------------------------------------------------
-  // These mirror the host's own `SidebarNavItem` row so the entry sits in the
-  // nav column rather than beside it. Taken from that component's classes:
-  //   "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5
-  //    text-(length:--text-compact) font-medium transition-colors"
-  //   active: bg-sidebar-accent text-sidebar-accent-foreground
-  //   idle:   text-foreground/80 hover:bg-sidebar-accent
-  // Same rhythm, same inset pill, same hover — otherwise the row reads as a
-  // foreign object in the list, which is exactly what it looked like.
+  // The nav entry is not a link any more, but it keeps the host's row rhythm so it
+  // sits in the list rather than beside it: same `mx-2 rounded-lg px-2 py-1.5` inset
+  // as every `SidebarNavItem`.
   sidebarWrap: { display: "flex", flexDirection: "column", gap: 0 },
-  /** The same row rhythm as `sidebarLink`, for a row that is not a link. */
   sidebarRow: {
     display: "flex",
     alignItems: "center",
@@ -158,28 +237,12 @@ export const styles: Record<string, CSSProperties> = {
     margin: "0 8px",
     borderRadius: 8,
     padding: "6px 8px",
-    color: "var(--foreground)",
+    color: ui.foreground,
     opacity: 0.8,
     fontSize: "var(--text-compact, 13px)",
     fontWeight: 500,
     lineHeight: 1.35,
   },
-  sidebarLink: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    margin: "0 8px",
-    borderRadius: 8,
-    padding: "6px 8px",
-    color: "var(--foreground)",
-    opacity: 0.8,
-    textDecoration: "none",
-    fontSize: "var(--text-compact, 13px)",
-    fontWeight: 500,
-    lineHeight: 1.35,
-    transition: "background-color 120ms ease, color 120ms ease",
-  },
-  /** Matches `h-4 w-4 text-foreground/80` on the host's icons. */
   sidebarGlyph: {
     display: "inline-flex",
     flex: "0 0 auto",
@@ -195,89 +258,14 @@ export const styles: Record<string, CSSProperties> = {
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
   },
-  sidebarDotOk: {
-    flex: "0 0 auto",
-    width: 6,
-    height: 6,
-    borderRadius: "50%",
-    background: "var(--primary)",
-  },
+  sidebarDotOk: { flex: "0 0 auto", width: 6, height: 6, borderRadius: "50%", background: ui.statusDone },
   sidebarDotIdle: {
     flex: "0 0 auto",
     width: 6,
     height: 6,
     borderRadius: "50%",
-    background: "var(--muted-foreground)",
+    background: ui.mutedForeground,
   },
-  // -- Route sidebar (the view rail) -------------------------------------
-  // The host renders this inside its secondary sidebar, so it uses the host's
-  // own surface and border rather than inventing a panel.
-  viewRail: { display: "flex", flexDirection: "column", gap: 2, padding: "4px 8px" },
-  viewRailItem: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 2,
-    padding: "7px 9px",
-    borderRadius: 8,
-    textDecoration: "none",
-    color: "var(--foreground)",
-    opacity: 0.75,
-    transition: "background-color 120ms ease, color 120ms ease",
-  },
-  viewRailItemActive: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 2,
-    padding: "7px 9px",
-    borderRadius: 8,
-    textDecoration: "none",
-    background: "var(--sidebar-accent, var(--accent))",
-    color: "var(--sidebar-accent-foreground, var(--accent-foreground))",
-  },
-  viewRailLabel: { fontSize: 13, fontWeight: 600, lineHeight: 1.3 },
-  viewRailNote: {
-    fontSize: 11,
-    lineHeight: 1.4,
-    color: "var(--muted-foreground)",
-  },
-
-  /** The note sits under the row, aligned to the label's left edge. */
+  /** The note sits under the row, aligned with the label's left edge. */
   sidebarNotes: { listStyle: "none", padding: "0 16px 0 34px", margin: "2px 0 0" },
 };
-
-/**
- * Surfaces the reader draws in Paperclip's own design language.
- *
- * Switched from CodeGraph's warm-paper palette to the host's tokens at the
- * operator's request: a plugin page that repaints itself in another tool's
- * colours reads as a foreign window inside Paperclip, and it ignores the theme
- * the operator chose. Every value here is a host custom property, so light and
- * dark both work without this plugin knowing which is active.
- *
- * `var(--x, fallback)` rather than the raw property: the tokens are defined at
- * `:root` by the host, and the fallbacks keep the page legible if one is ever
- * renamed.
- */
-export const ui = {
-  /** Page surface. */
-  background: "var(--background, #ffffff)",
-  foreground: "var(--foreground, #16150f)",
-  /** Panels and inputs. */
-  card: "var(--card, #ffffff)",
-  muted: "var(--muted, rgba(0,0,0,0.04))",
-  mutedForeground: "var(--muted-foreground, rgba(0,0,0,0.55))",
-  border: "var(--border, rgba(0,0,0,0.10))",
-  input: "var(--input, rgba(0,0,0,0.12))",
-  primary: "var(--primary, #16150f)",
-  primaryForeground: "var(--primary-foreground, #ffffff)",
-  accent: "var(--accent, rgba(0,0,0,0.05))",
-  accentForeground: "var(--accent-foreground, #16150f)",
-  /** The one accent used for selected and active states. */
-  ring: "var(--ring, rgba(0,0,0,0.35))",
-  destructive: "var(--destructive, #dc2626)",
-  /** Named like the host's own scale. */
-  fontSans: 'var(--font-sans, "InterVariable", Inter, ui-sans-serif, system-ui, sans-serif)',
-  fontMono: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-  /** Row height and radius constants taken from the host's sidebar rows. */
-  radius: "var(--radius, 8px)",
-} as const;
