@@ -159,6 +159,45 @@ async function repositoryRoot(
 }
 
 /**
+ * The repository the run is actually working in, per Paperclip.
+ *
+ * This is the correction to "why does it ask for a repo?": the path already
+ * exists as a Paperclip project workspace, created by the host and owned by it.
+ * `projectId` comes from the run context, not from an agent argument, so the
+ * value is host-trusted; it is still validated like any other path before use.
+ *
+ * Returns null when there is no project context, no workspace, or the workspace
+ * fails validation — in which case governance alone decides, exactly as before.
+ */
+async function workspaceForRun(
+  ctx: PluginContext,
+  companyId: string,
+  projectId: string | null,
+  roots: readonly string[],
+): Promise<string | null> {
+  if (!projectId) return null;
+  try {
+    const workspace = await ctx.projects.getPrimaryWorkspace(projectId, companyId);
+    const candidate = workspace?.path;
+    if (!candidate) return null;
+    return resolveProjectPath(candidate, { allowedProjectRoots: [...roots] });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reasons that mean "we could not find a repository", as opposed to "you are not
+ * allowed". Only these are eligible for the workspace fallback: a disabled
+ * company, a disabled agent, or a tool denial must still deny.
+ */
+const REPOSITORY_MISSING_REASONS = new Set([
+  "company_not_configured",
+  "no_project_bound",
+  "project_binding_missing",
+]);
+
+/**
  * Turn a governance binding path into an absolute one.
  *
  * Relative paths resolve against the operator's folder; absolute paths are
@@ -329,6 +368,49 @@ async function handleToolCall(
       };
     }
     throw error;
+  }
+
+  // If governance could not produce a repository, fall back to the workspace
+  // Paperclip says this run is working in. Implemented by re-resolving with a
+  // synthetic binding rather than by bypassing the resolver, so the narrowing
+  // algebra and every tool decision stay exactly as tested: existing policy,
+  // agents and per-project overrides are carried over verbatim.
+  if (!resolved.allowed && REPOSITORY_MISSING_REASONS.has(resolved.reason)) {
+    const workspace = await workspaceForRun(
+      ctx,
+      runCtx.companyId,
+      runCtx.projectId ?? null,
+      containmentRoots(config, await repositoryRoot(ctx, runCtx.companyId)),
+    );
+    if (workspace) {
+      const existing = document.companies[runCtx.companyId];
+      const withWorkspace = parseGovernance({
+        version: 1,
+        defaults: document.defaults,
+        companies: {
+          [runCtx.companyId]: {
+            ...(existing ?? {}),
+            enabled: true,
+            defaultProjectKey: existing?.defaultProjectKey ?? "workspace",
+            projects: {
+              ...(existing?.projects ?? {}),
+              workspace: {
+                projectKey: "workspace",
+                path: workspace,
+                displayName: "Project workspace",
+              },
+            },
+          },
+        },
+      });
+      const retry = resolveScope(withWorkspace, {
+        companyId: runCtx.companyId,
+        paperclipProjectId: runCtx.projectId ?? null,
+        agentId: runCtx.agentId ?? null,
+        pluginEnabled: config.enabled,
+      });
+      if (retry.allowed) resolved = retry;
+    }
   }
 
   const decision = decideToolAccess(resolved, spec.name);

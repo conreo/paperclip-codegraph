@@ -33,6 +33,9 @@ const manifest: PaperclipPluginManifestV1 = {
     // company/project/agent id from a run context is real before trusting it.
     "companies.read",
     "projects.read",
+    // The repository an agent is allowed to read is derived from the Paperclip
+    // project it is working in, rather than typed into plugin config.
+    "project.workspaces.read",
     "agents.read",
     // The governance document (which company may read which codebase).
     "plugin.state.read",

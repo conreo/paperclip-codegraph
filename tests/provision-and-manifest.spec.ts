@@ -29,6 +29,8 @@ describe("manifest", () => {
       "agent.tools.register",
       "companies.read",
       "projects.read",
+      // Used to derive the repository from the run's project workspace.
+      "project.workspaces.read",
       "agents.read",
       "plugin.state.read",
       "plugin.state.write",
