@@ -100,13 +100,6 @@ export const KEYS_WITHOUT_UI_CALLER: readonly string[] = [
   DATA_KEYS.graphDiagnose,
   DATA_KEYS.indexStatus,
   DATA_KEYS.verifyScope,
-  // Orphaned by the 0.9.8 reader: the page now mirrors CodeGraph's own
-  // caller/source/callee layout instead of drawing a layered diagram, so nothing
-  // calls this. Kept registered because it is tested, it works, and a diagram is
-  // the right shape for a question the reader does not answer — "what does the
-  // blast radius look like" rather than "where does this happen". `src/graph/layout.ts`
-  // and its 20 tests are the other half of that, also currently unreferenced.
-  DATA_KEYS.graphNeighbourhood,
 ];
 
 export const ALL_DATA_KEYS: readonly string[] = Object.values(DATA_KEYS);

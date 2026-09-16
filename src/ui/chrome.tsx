@@ -126,71 +126,97 @@ export const styles: Record<string, CSSProperties> = {
   },
 
   // -- Nav column ---------------------------------------------------------
-  // Sized and coloured to sit among the host's own nav items rather than
-  // announce itself as foreign: same compact text size, same muted default,
-  // and a glyph on the left like every sibling entry.
-  sidebarWrap: { display: "flex", flexDirection: "column", gap: 2 },
+  // These mirror the host's own `SidebarNavItem` row so the entry sits in the
+  // nav column rather than beside it. Taken from that component's classes:
+  //   "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5
+  //    text-(length:--text-compact) font-medium transition-colors"
+  //   active: bg-sidebar-accent text-sidebar-accent-foreground
+  //   idle:   text-foreground/80 hover:bg-sidebar-accent
+  // Same rhythm, same inset pill, same hover — otherwise the row reads as a
+  // foreign object in the list, which is exactly what it looked like.
+  sidebarWrap: { display: "flex", flexDirection: "column", gap: 0 },
   sidebarLink: {
     display: "flex",
     alignItems: "center",
-    gap: 8,
+    gap: 10,
+    margin: "0 8px",
+    borderRadius: 8,
     padding: "6px 8px",
-    borderRadius: 6,
-    color: "inherit",
+    color: "var(--foreground)",
+    opacity: 0.8,
     textDecoration: "none",
-    fontSize: 13,
+    fontSize: "var(--text-compact, 13px)",
     fontWeight: 500,
-    lineHeight: 1.2,
+    lineHeight: 1.35,
+    transition: "background-color 120ms ease, color 120ms ease",
   },
-  sidebarGlyph: { display: "inline-flex", flex: "0 0 auto", opacity: 0.8 },
-  sidebarLabel: { flex: "1 1 auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  /** Matches `h-4 w-4 text-foreground/80` on the host's icons. */
+  sidebarGlyph: {
+    display: "inline-flex",
+    flex: "0 0 auto",
+    width: 16,
+    height: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sidebarLabel: {
+    flex: "1 1 auto",
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
   sidebarDotOk: {
     flex: "0 0 auto",
     width: 6,
     height: 6,
     borderRadius: "50%",
-    background: "var(--success, #16a34a)",
+    background: "var(--primary)",
   },
   sidebarDotIdle: {
     flex: "0 0 auto",
     width: 6,
     height: 6,
     borderRadius: "50%",
-    background: "var(--muted-foreground, #9ca3af)",
+    background: "var(--muted-foreground)",
   },
-  sidebarNotes: { listStyle: "none", padding: "0 8px", margin: 0 },
+  /** The note sits under the row, aligned to the label's left edge. */
+  sidebarNotes: { listStyle: "none", padding: "0 16px 0 34px", margin: "2px 0 0" },
 };
 
 /**
- * The CodeGraph page's own palette.
+ * Surfaces the reader draws in Paperclip's own design language.
  *
- * Taken from the CodeGraph viewer's design tokens — warm paper rather than the
- * host's neutral surfaces, one ink scale, and a single accent. Reproducing the
- * tool's own look is the point: an operator who has used `codegraph ui` should
- * recognise this page immediately.
+ * Switched from CodeGraph's warm-paper palette to the host's tokens at the
+ * operator's request: a plugin page that repaints itself in another tool's
+ * colours reads as a foreign window inside Paperclip, and it ignores the theme
+ * the operator chose. Every value here is a host custom property, so light and
+ * dark both work without this plugin knowing which is active.
  *
- * A separate namespace from the host's `--background`/`--border` tokens on
- * purpose. This is a light, paper-coloured surface by design, and reusing the
- * host's tokens would make it inherit a dark theme where the palette stops
- * making sense. Settings and the nav entry stay on the host's tokens; only the
- * reader is CodeGraph-styled.
+ * `var(--x, fallback)` rather than the raw property: the tokens are defined at
+ * `:root` by the host, and the fallbacks keep the page legible if one is ever
+ * renamed.
  */
-export const reader = {
-  paper: "#f7f6f2",
-  paper2: "#f1efe8",
-  press: "#e8e6dd",
-  press2: "#dedbd0",
-  ink: "#16150f",
-  ink2: "#56544a",
-  ink3: "#87847a",
-  ink4: "#b4b1a5",
-  rule: "#d6d3c8",
-  ruleFaint: "#e6e3d9",
-  accent: "#7a2230",
-  accentSoft: "#f0e3e5",
-  accentLine: "#d9b3b9",
-  amber: "#8a5a0b",
-  amberSoft: "#f3e9d2",
-  sans: 'Archivo, "Helvetica Neue", Arial, system-ui, sans-serif',
-  mono: '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+export const ui = {
+  /** Page surface. */
+  background: "var(--background, #ffffff)",
+  foreground: "var(--foreground, #16150f)",
+  /** Panels and inputs. */
+  card: "var(--card, #ffffff)",
+  muted: "var(--muted, rgba(0,0,0,0.04))",
+  mutedForeground: "var(--muted-foreground, rgba(0,0,0,0.55))",
+  border: "var(--border, rgba(0,0,0,0.10))",
+  input: "var(--input, rgba(0,0,0,0.12))",
+  primary: "var(--primary, #16150f)",
+  primaryForeground: "var(--primary-foreground, #ffffff)",
+  accent: "var(--accent, rgba(0,0,0,0.05))",
+  accentForeground: "var(--accent-foreground, #16150f)",
+  /** The one accent used for selected and active states. */
+  ring: "var(--ring, rgba(0,0,0,0.35))",
+  destructive: "var(--destructive, #dc2626)",
+  /** Named like the host's own scale. */
+  fontSans: 'var(--font-sans, "InterVariable", Inter, ui-sans-serif, system-ui, sans-serif)',
+  fontMono: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+  /** Row height and radius constants taken from the host's sidebar rows. */
+  radius: "var(--radius, 8px)",
 } as const;

@@ -23,12 +23,21 @@
  * one, since the graph is per repository while search spans them.
  */
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
 
 import { DATA_KEYS } from "../plugin-keys.js";
 import { sanitizeErrorMessage } from "../errors.js";
-import { reader } from "./chrome.js";
+import { ui } from "./chrome.js";
+import { readerLayout, showsSidePanes } from "./reader-layout.js";
 
 // ---------------------------------------------------------------------------
 // Wire shapes
@@ -59,6 +68,13 @@ interface CallRef extends SymbolRef {
   edgeKind: string;
 }
 
+/**
+ * The reader's payload, and the map's.
+ *
+ * The map is served by `graph-neighbourhood`, which returns the same seed,
+ * caller and callee shape alongside the raw graph — so one type describes both
+ * and the two views cannot drift apart.
+ */
 interface ReaderResponse {
   seed?: SymbolRef;
   callers?: CallRef[];
@@ -85,6 +101,31 @@ interface SourceResponse {
   error?: string;
 }
 
+/**
+ * The reader's views.
+ *
+ * CodeGraph's own UI offers Steps · Entry points · Map · Symbol · Flow · Dead
+ * code. Only the ones this plugin can actually fill are listed, because a tab
+ * that opens a fabricated view is worse than a tab that is not there:
+ *
+ * - **Symbol** and **Map** are built from the call graph and the index, so both
+ *   are real.
+ * - **Steps**, **Flow** and **Dead code** need call-path tracking and an
+ *   unused-code analysis with export/reference awareness. The index carries no
+ *   such marks — a naive "no inbound edge" query returns **zero** candidates on
+ *   the real POS index, because route and file nodes reference everything — so
+ *   those views would be guesses. They are omitted rather than mocked.
+ * - **Entry points** is reachable through the search index (routes are a node
+ *   kind) and is planned; it is not listed until it works.
+ */
+const VIEWS = ["symbol", "map"] as const;
+type View = (typeof VIEWS)[number];
+
+const VIEW_LABELS: Record<View, string> = {
+  symbol: "Symbol",
+  map: "Map",
+};
+
 const KIND_LABELS: Record<string, string> = {
   function: "Functions",
   method: "Methods",
@@ -105,6 +146,41 @@ function kindGroup(kind: string): string {
 // Page
 // ---------------------------------------------------------------------------
 
+/**
+ * Measures the page and decides how many panes fit.
+ *
+ * A ResizeObserver rather than a media query: the host's content column can be
+ * narrow on a wide screen (a pinned sidebar, a split view), so the viewport width
+ * is the wrong number to branch on. The observed element is the page itself,
+ * which is the box the panes have to fit inside.
+ */
+function useReaderLayout(): {
+  kind: ReturnType<typeof readerLayout>;
+  ref: (node: HTMLElement | null) => void;
+} {
+  const [width, setWidth] = useState(0);
+  const observer = useRef<ResizeObserver | null>(null);
+
+  const ref = useCallback((node: HTMLElement | null) => {
+    observer.current?.disconnect();
+    if (!node) return;
+
+    setWidth(node.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setWidth(entry.contentRect.width);
+    });
+    ro.observe(node);
+    observer.current = ro;
+  }, []);
+
+  useEffect(() => () => observer.current?.disconnect(), []);
+
+  return { kind: readerLayout(width), ref };
+}
+
 export function CodeGraphPage({ context }: PluginPageProps) {
   const companyId = context.companyId ?? null;
 
@@ -121,6 +197,8 @@ export function CodeGraphPage({ context }: PluginPageProps) {
   const organization = reposData?.organization ?? null;
 
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [view, setView] = useState<View>("symbol");
+  const layout = useReaderLayout();
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [selected, setSelected] = useState<SymbolRef | null>(null);
@@ -163,6 +241,13 @@ export function CodeGraphPage({ context }: PluginPageProps) {
     { companyId, projectId, nodeId: selected?.id ?? null },
   );
 
+  // The Map view's diagram. Only fetched when that tab is open, so the reader
+  // does not pay for a graph it is not showing.
+  const { data: mapData, loading: mapLoading } = usePluginData<ReaderResponse>(
+    DATA_KEYS.graphNeighbourhood,
+    { companyId, projectId, nodeId: view === "map" ? (selected?.id ?? null) : null, depth: 2 },
+  );
+
   const results = searchData?.results ?? [];
   const active = repositories.find((repo) => repo.projectId === projectId) ?? null;
 
@@ -183,7 +268,7 @@ export function CodeGraphPage({ context }: PluginPageProps) {
   }
 
   return (
-    <div style={styles.page}>
+    <div ref={layout.ref} style={styles.page}>
       <header style={styles.topbar}>
         <div style={styles.brand}>
           <span aria-hidden style={styles.brandMark} />
@@ -227,6 +312,24 @@ export function CodeGraphPage({ context }: PluginPageProps) {
         </div>
       </header>
 
+      <nav style={styles.viewTabs} aria-label="Views">
+        {VIEWS.map((value) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setView(value)}
+            aria-current={view === value ? "page" : undefined}
+            style={view === value ? styles.viewTabActive : styles.viewTab}
+          >
+            {VIEW_LABELS[value]}
+          </button>
+        ))}
+        <span style={styles.viewTabNote}>
+          Steps, Flow and Dead code are not offered: the index carries no call-path
+          history, and its edges cannot distinguish unused code from a route handler.
+        </span>
+      </nav>
+
       {repositories.length === 0 ? (
         <p style={styles.notice}>
           This organization has no repository workspaces, so there is nothing to read. A
@@ -239,7 +342,15 @@ export function CodeGraphPage({ context }: PluginPageProps) {
         </p>
       ) : null}
 
-      <div style={styles.body}>
+      {view === "map" ? (
+        <MapView
+          graph={mapData}
+          loading={mapLoading}
+          seedName={selected?.name ?? null}
+          onOpen={setSelected}
+        />
+      ) : (
+      <div style={showsSidePanes(layout.kind) ? styles.body : styles.bodyStacked}>
         <Pane
           title="Callers"
           count={readerData?.callerCount}
@@ -297,23 +408,110 @@ export function CodeGraphPage({ context }: PluginPageProps) {
           ))}
         </Pane>
       </div>
+      )}
 
       {selected ? (
+        /*
+         * A status strip, not navigation. There is no back button here on
+         * purpose: this is a full page inside Paperclip, so going back is the
+         * browser, the company nav, or the browser's own history — a plugin
+         * inventing its own back affordance duplicates chrome the host already
+         * shows, and it is what made the page feel like a separate app.
+         */
         <footer style={styles.trail}>
           <span style={styles.trailLabel}>Reading</span>
           <code style={styles.trailCode}>
             {selected.name} — {selected.filePath}
             {selected.startLine === null ? "" : `:${selected.startLine}`}
           </code>
-          <button type="button" style={styles.trailButton} onClick={() => setSelected(null)}>
-            Back to search
-          </button>
           {readerLoading ? <span style={styles.dim}>updating…</span> : null}
           {readerData?.error ? (
             <span style={styles.error}>{sanitizeErrorMessage(readerData.error)}</span>
           ) : null}
         </footer>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The Map view: the symbol's neighbourhood as a layered diagram.
+ *
+ * The one place the layered layout is the right shape — it answers "what does
+ * this touch" at a glance, which the reader answers only line by line. Callers
+ * above, the seed in the middle, callees below.
+ */
+function MapView({
+  graph,
+  loading,
+  seedName,
+  onOpen,
+}: {
+  graph: ReaderResponse | null;
+  loading: boolean;
+  seedName: string | null;
+  onOpen: (symbol: SymbolRef) => void;
+}) {
+  if (!seedName) {
+    return (
+      <div style={styles.mapEmpty}>
+        <p style={styles.dim}>
+          Open a symbol in the Symbol view, then switch here to see its neighbourhood as a
+          diagram.
+        </p>
+      </div>
+    );
+  }
+  if (loading && !graph) {
+    return (
+      <div style={styles.mapEmpty}>
+        <p style={styles.dim}>Drawing…</p>
+      </div>
+    );
+  }
+  const callers = graph?.callers ?? [];
+  const callees = graph?.callees ?? [];
+
+  return (
+    <div style={styles.map}>
+      <div style={styles.mapColumn}>
+        <h3 style={styles.paneTitle}>Callers</h3>
+        {callers.length === 0 ? (
+          <p style={styles.dim}>Nothing calls this.</p>
+        ) : (
+          callers.map((call) => (
+            <button
+              key={`${call.id}:${call.callLine}`}
+              type="button"
+              style={styles.mapNode}
+              onClick={() => onOpen(call)}
+            >
+              {call.name}
+            </button>
+          ))
+        )}
+      </div>
+      <div style={styles.mapColumn}>
+        <h3 style={styles.paneTitle}>This symbol</h3>
+        <div style={styles.mapSeed}>{seedName}</div>
+      </div>
+      <div style={styles.mapColumn}>
+        <h3 style={styles.paneTitle}>Callees</h3>
+        {callees.length === 0 ? (
+          <p style={styles.dim}>This calls nothing recorded.</p>
+        ) : (
+          callees.map((call) => (
+            <button
+              key={`${call.id}:${call.callLine}`}
+              type="button"
+              style={styles.mapNode}
+              onClick={() => onOpen(call)}
+            >
+              {call.name}
+            </button>
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -563,14 +761,25 @@ function CallRow({ call, onOpen }: { call: CallRef; onOpen: (symbol: SymbolRef) 
  * this is a light reading surface, and inheriting a dark theme would break it.
  */
 const styles: Record<string, CSSProperties> = {
+  /*
+   * Sizing, given a host container this page does not control.
+   *
+   * A plugin page is dropped into whatever wrapper the host provides, and that
+   * wrapper may or may not have a height. `height: 100%` alone collapses to the
+   * content height when it does not, which is how the panes came out the wrong
+   * size; a fixed pixel height would overflow on a short window. So: fill the
+   * parent when it has a height, and never exceed the viewport either way.
+   */
   page: {
     display: "flex",
     flexDirection: "column",
     minHeight: 0,
     height: "100%",
-    background: reader.paper,
-    color: reader.ink,
-    fontFamily: reader.sans,
+    maxHeight: "100vh",
+    boxSizing: "border-box",
+    background: ui.background,
+    color: ui.foreground,
+    fontFamily: ui.fontSans,
     fontSize: 13,
   },
   topbar: {
@@ -579,8 +788,8 @@ const styles: Record<string, CSSProperties> = {
     gap: 14,
     padding: "0 14px",
     minHeight: 48,
-    borderBottom: `1px solid ${reader.ruleFaint}`,
-    background: reader.paper,
+    borderBottom: `1px solid ${ui.border}`,
+    background: ui.background,
     flexWrap: "wrap",
   },
   brand: { display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" },
@@ -588,37 +797,37 @@ const styles: Record<string, CSSProperties> = {
     width: 10,
     height: 10,
     borderRadius: 2,
-    background: reader.accent,
+    background: ui.primary,
     display: "inline-block",
   },
   brandName: { fontWeight: 600, fontSize: 14, letterSpacing: -0.2 },
-  brandProject: { color: reader.ink2, fontFamily: reader.mono, fontSize: 12 },
+  brandProject: { color: ui.mutedForeground, fontFamily: ui.fontMono, fontSize: 12 },
   repoSelect: {
-    fontFamily: reader.mono,
+    fontFamily: ui.fontMono,
     fontSize: 12,
     padding: "3px 6px",
     borderRadius: 4,
-    border: `1px solid ${reader.rule}`,
-    background: reader.paper,
-    color: reader.ink,
+    border: `1px solid ${ui.border}`,
+    background: ui.background,
+    color: ui.foreground,
   },
   search: {
     flex: "1 1 260px",
     minWidth: 200,
     padding: "7px 10px",
     borderRadius: 4,
-    border: `1px solid ${reader.rule}`,
-    background: reader.paper,
-    color: reader.ink,
-    fontFamily: reader.sans,
+    border: `1px solid ${ui.border}`,
+    background: ui.background,
+    color: ui.foreground,
+    fontFamily: ui.fontSans,
     fontSize: 13,
   },
-  stats: { color: reader.ink3, fontSize: 11.5, fontFamily: reader.mono, flex: "0 0 auto" },
+  stats: { color: ui.mutedForeground, fontSize: 11.5, fontFamily: ui.fontMono, flex: "0 0 auto" },
   notice: {
     margin: 0,
     padding: "9px 14px",
-    background: reader.amberSoft,
-    color: reader.amber,
+    background: ui.muted,
+    color: ui.mutedForeground,
     fontSize: 12.5,
   },
   body: {
@@ -627,14 +836,17 @@ const styles: Record<string, CSSProperties> = {
     flex: "1 1 auto",
     minHeight: 0,
     overflow: "hidden",
+    flexWrap: "nowrap",
   },
   pane: {
-    flex: "0 0 232px",
+    // minWidth 0 so a long symbol name cannot push the pane wider than its
+    // share; the truncation happens inside the row instead.
+    flex: "0 1 232px",
     display: "flex",
     flexDirection: "column",
     minWidth: 0,
-    borderRight: `1px solid ${reader.ruleFaint}`,
-    background: reader.paper2,
+    borderRight: `1px solid ${ui.border}`,
+    background: ui.muted,
     overflowY: "auto",
   },
   paneHead: {
@@ -649,15 +861,15 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     textTransform: "uppercase",
     letterSpacing: 0.6,
-    color: reader.ink3,
+    color: ui.mutedForeground,
   },
-  paneCount: { fontSize: 11, color: reader.ink4, fontFamily: reader.mono },
+  paneCount: { fontSize: 11, color: ui.mutedForeground, fontFamily: ui.fontMono },
   paneBody: { padding: "0 8px 12px", display: "flex", flexDirection: "column", gap: 1 },
   sourcePane: {
     flex: "1 1 auto",
     minWidth: 0,
     overflowY: "auto",
-    background: reader.paper,
+    background: ui.background,
     padding: "0 0 24px",
   },
   resultsWrap: { padding: 16 },
@@ -668,7 +880,7 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     textTransform: "uppercase",
     letterSpacing: 0.6,
-    color: reader.ink3,
+    color: ui.mutedForeground,
   },
   resultList: { listStyle: "none", margin: 0, padding: 0 },
   resultRow: {
@@ -688,15 +900,15 @@ const styles: Record<string, CSSProperties> = {
   },
   resultGlyph: {
     flex: "0 0 26px",
-    color: reader.accent,
-    fontFamily: reader.mono,
+    color: ui.primary,
+    fontFamily: ui.fontMono,
     fontSize: 11,
   },
   resultName: { fontWeight: 500, flex: "0 0 auto" },
   resultQualified: {
-    color: reader.ink3,
+    color: ui.mutedForeground,
     fontSize: 11.5,
-    fontFamily: reader.mono,
+    fontFamily: ui.fontMono,
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
@@ -704,14 +916,14 @@ const styles: Record<string, CSSProperties> = {
   },
   resultWhere: {
     marginLeft: "auto",
-    color: reader.ink4,
+    color: ui.mutedForeground,
     fontSize: 11,
-    fontFamily: reader.mono,
+    fontFamily: ui.fontMono,
     flex: "0 0 auto",
   },
   emptyState: { maxWidth: 560, padding: "56px 32px" },
   emptyTitle: { margin: "0 0 8px", fontSize: 20, fontWeight: 600, letterSpacing: -0.3 },
-  emptyBody: { margin: "0 0 10px", color: reader.ink2, lineHeight: 1.55 },
+  emptyBody: { margin: "0 0 10px", color: ui.mutedForeground, lineHeight: 1.55 },
   sourceWrap: { padding: "12px 16px 0" },
   sourceHead: {
     display: "flex",
@@ -719,23 +931,23 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     flexWrap: "wrap",
     paddingBottom: 8,
-    borderBottom: `1px solid ${reader.ruleFaint}`,
+    borderBottom: `1px solid ${ui.border}`,
     marginBottom: 10,
   },
   sourceName: { fontSize: 15, fontWeight: 600 },
   sourceKind: {
     fontSize: 11,
-    color: reader.ink3,
+    color: ui.mutedForeground,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
-  sourcePath: { marginLeft: "auto", fontFamily: reader.mono, fontSize: 11.5, color: reader.ink3 },
+  sourcePath: { marginLeft: "auto", fontFamily: ui.fontMono, fontSize: 11.5, color: ui.mutedForeground },
   code: {
-    fontFamily: reader.mono,
+    fontFamily: ui.fontMono,
     fontSize: 12.5,
     lineHeight: "20px",
-    background: reader.paper,
-    border: `1px solid ${reader.ruleFaint}`,
+    background: ui.background,
+    border: `1px solid ${ui.border}`,
     borderRadius: 4,
     overflowX: "auto",
   },
@@ -744,14 +956,14 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     gap: 0,
     paddingRight: 10,
-    background: reader.accentSoft,
-    boxShadow: `inset 2px 0 0 ${reader.accentLine}`,
+    background: ui.primary,
+    boxShadow: `inset 2px 0 0 ${ui.ring}`,
   },
   gutter: {
     flex: "0 0 46px",
     textAlign: "right",
     paddingRight: 10,
-    color: reader.ink4,
+    color: ui.mutedForeground,
     userSelect: "none",
   },
   codeText: { whiteSpace: "pre", flex: "1 1 auto" },
@@ -762,25 +974,25 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     textTransform: "uppercase",
     letterSpacing: 0.6,
-    color: reader.ink3,
+    color: ui.mutedForeground,
   },
   alignedList: { listStyle: "none", margin: 0, padding: 0 },
   alignedRow: { display: "flex", alignItems: "baseline", gap: 8, padding: "2px 0" },
   alignedLine: {
     flex: "0 0 56px",
     textAlign: "right",
-    fontFamily: reader.mono,
+    fontFamily: ui.fontMono,
     fontSize: 11,
-    color: reader.ink4,
+    color: ui.mutedForeground,
   },
   alignedLink: {
-    color: reader.accent,
+    color: ui.primary,
     textDecoration: "none",
     fontWeight: 500,
-    fontFamily: reader.mono,
+    fontFamily: ui.fontMono,
     fontSize: 12.5,
   },
-  alignedWhere: { color: reader.ink4, fontSize: 11, fontFamily: reader.mono },
+  alignedWhere: { color: ui.mutedForeground, fontSize: 11, fontFamily: ui.fontMono },
   callRow: {
     display: "flex",
     flexDirection: "column",
@@ -795,12 +1007,12 @@ const styles: Record<string, CSSProperties> = {
     cursor: "pointer",
     fontFamily: "inherit",
   },
-  callName: { fontSize: 12.5, fontWeight: 500, fontFamily: reader.mono },
-  callWhere: { fontSize: 10.5, color: reader.ink4, fontFamily: reader.mono },
+  callName: { fontSize: 12.5, fontWeight: 500, fontFamily: ui.fontMono },
+  callWhere: { fontSize: 10.5, color: ui.mutedForeground, fontFamily: ui.fontMono },
   callKind: {
     fontSize: 10,
-    color: reader.accent,
-    fontFamily: reader.mono,
+    color: ui.primary,
+    fontFamily: ui.fontMono,
     textTransform: "uppercase",
     letterSpacing: 0.4,
   },
@@ -809,29 +1021,105 @@ const styles: Record<string, CSSProperties> = {
     alignItems: "center",
     gap: 10,
     padding: "7px 14px",
-    borderTop: `1px solid ${reader.ruleFaint}`,
-    background: reader.paper2,
+    borderTop: `1px solid ${ui.border}`,
+    background: ui.muted,
     flexWrap: "wrap",
   },
   trailLabel: {
     fontSize: 10.5,
     textTransform: "uppercase",
     letterSpacing: 0.6,
-    color: reader.ink3,
+    color: ui.mutedForeground,
     fontWeight: 600,
   },
-  trailCode: { fontFamily: reader.mono, fontSize: 11.5, color: reader.ink2 },
+  trailCode: { fontFamily: ui.fontMono, fontSize: 11.5, color: ui.mutedForeground },
   trailButton: {
     marginLeft: "auto",
     padding: "4px 10px",
     borderRadius: 4,
-    border: `1px solid ${reader.rule}`,
-    background: reader.paper,
-    color: reader.ink,
+    border: `1px solid ${ui.border}`,
+    background: ui.background,
+    color: ui.foreground,
     cursor: "pointer",
     fontFamily: "inherit",
     fontSize: 12,
   },
-  dim: { color: reader.ink3, fontSize: 12, margin: "6px 0" },
-  error: { color: reader.accent, fontSize: 12, margin: "6px 0" },
+  dim: { color: ui.mutedForeground, fontSize: 12, margin: "6px 0" },
+  error: { color: ui.primary, fontSize: 12, margin: "6px 0" },
+  // -- View tabs ----------------------------------------------------------
+  // Shaped like the host's own page tab bars: a quiet row of labels with only
+  // the active one marked, so this reads as a section of Paperclip rather than
+  // a toolbar of its own.
+  /** Narrow: source first, panes beneath it, each full width. */
+  bodyStacked: {
+    display: "flex",
+    flexDirection: "column",
+    flex: "1 1 auto",
+    minHeight: 0,
+    overflowY: "auto",
+  },
+  viewTabs: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "6px 14px",
+    borderBottom: `1px solid ${ui.border}`,
+    flexWrap: "wrap",
+  },
+  viewTab: {
+    padding: "4px 10px",
+    borderRadius: 6,
+    border: "1px solid transparent",
+    background: "transparent",
+    color: ui.mutedForeground,
+    fontFamily: "inherit",
+    fontSize: 12.5,
+    fontWeight: 500,
+    cursor: "pointer",
+  },
+  viewTabActive: {
+    padding: "4px 10px",
+    borderRadius: 6,
+    border: `1px solid ${ui.border}`,
+    background: ui.accent,
+    color: ui.accentForeground,
+    fontFamily: "inherit",
+    fontSize: 12.5,
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  viewTabNote: { marginLeft: "auto", color: ui.mutedForeground, fontSize: 11 },
+
+  // -- Map ----------------------------------------------------------------
+  map: {
+    display: "flex",
+    gap: 16,
+    padding: 16,
+    alignItems: "flex-start",
+    overflow: "auto",
+    flex: "1 1 auto",
+    minHeight: 0,
+  },
+  mapColumn: { flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column", gap: 4 },
+  mapNode: {
+    textAlign: "left",
+    padding: "6px 9px",
+    borderRadius: 6,
+    border: `1px solid ${ui.border}`,
+    background: ui.card,
+    color: "inherit",
+    fontFamily: ui.fontMono,
+    fontSize: 12,
+    cursor: "pointer",
+  },
+  mapSeed: {
+    padding: "8px 10px",
+    borderRadius: 6,
+    border: `1px solid ${ui.ring}`,
+    background: ui.accent,
+    fontWeight: 600,
+    fontFamily: ui.fontMono,
+    fontSize: 12.5,
+  },
+  mapEmpty: { padding: 24, flex: "1 1 auto" },
 };

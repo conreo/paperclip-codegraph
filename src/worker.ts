@@ -89,6 +89,7 @@ import {
   GraphUnavailable,
   calleesOf,
   callersOf,
+  type GraphEdge,
   neighbourhood,
   nodeById,
   searchNodes,
@@ -1284,9 +1285,38 @@ const plugin = definePlugin({
           companyId,
           asString(params?.["projectId"]),
         );
-        // The seed is echoed back so the view can mark the centre of the graph
-        // without re-deriving it from the traversal order.
-        return { graph: neighbourhood(projectPath, nodeId, depth), seedId: nodeId, depth };
+        // Both shapes, because both views need one. The graph carries the whole
+        // neighbourhood as nodes and edges, for the diagram; `callers` and
+        // `callees` carry the one-hop sides with resolved names and call lines,
+        // which is what the map draws as its columns. Returning them together
+        // means the Map tab does not need a second request.
+        const oneHop = (edges: GraphEdge[], direction: "in" | "out") =>
+          edges.slice(0, MAX_READER_EDGES).map((edge) => {
+            const otherId = direction === "in" ? edge.source : edge.target;
+            const node = nodeById(projectPath, otherId);
+            return {
+              id: otherId,
+              name: node?.name ?? "(unknown symbol)",
+              qualifiedName: node?.qualifiedName ?? "",
+              kind: node?.kind ?? "",
+              filePath: node?.filePath ?? "",
+              startLine: node?.startLine ?? null,
+              endLine: node?.endLine ?? null,
+              callLine: edge.line,
+              edgeKind: edge.kind,
+            };
+          });
+
+        return {
+          graph: neighbourhood(projectPath, nodeId, depth),
+          // The seed is echoed back so the view can mark the centre of the graph
+          // without re-deriving it from the traversal order.
+          seedId: nodeId,
+          depth,
+          seed: nodeById(projectPath, nodeId),
+          callers: oneHop(callersOf(projectPath, nodeId), "in"),
+          callees: oneHop(calleesOf(projectPath, nodeId), "out"),
+        };
       } catch (error) {
         return graphFailure(error);
       }
