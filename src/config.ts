@@ -339,3 +339,93 @@ export function normalizeConfig(input: unknown): RuntimeConfig {
 
   return config;
 }
+
+/**
+ * The five fields the operator can set, as a typed view of the config document.
+ *
+ * `instanceConfigSchema` is closed (`additionalProperties: false`) and the server
+ * validates writes against it with Ajv, so this is exactly the settable surface.
+ */
+export interface OperatorConfig {
+  enabled: boolean;
+  autoInstall: boolean;
+  autoIndex: boolean;
+  allowedProjectRoots: string[];
+  codegraphCommand: string;
+}
+
+/** The schema defaults, which is what an unconfigured plugin behaves as. */
+export const OPERATOR_CONFIG_DEFAULTS: OperatorConfig = {
+  enabled: false,
+  autoInstall: false,
+  autoIndex: false,
+  allowedProjectRoots: [],
+  codegraphCommand: DEFAULT_MCP_COMMAND,
+};
+
+function operatorBool(raw: Record<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = raw[key];
+  return typeof value === "boolean" ? value : fallback;
+}
+
+/**
+ * Read the operator's config out of a stored document.
+ *
+ * A missing or wrongly-typed key falls back to the schema default rather than
+ * throwing: this feeds a settings form, and a form that refuses to open because
+ * one key drifted is worse than a form showing the default.
+ */
+export function readOperatorConfig(raw: unknown): OperatorConfig {
+  if (typeof raw !== "object" || raw === null) return { ...OPERATOR_CONFIG_DEFAULTS };
+  const record = raw as Record<string, unknown>;
+
+  const roots = Array.isArray(record["allowedProjectRoots"])
+    ? record["allowedProjectRoots"].filter((entry): entry is string => typeof entry === "string")
+    : [...OPERATOR_CONFIG_DEFAULTS.allowedProjectRoots];
+
+  const command = record["codegraphCommand"];
+
+  return {
+    enabled: operatorBool(record, "enabled", OPERATOR_CONFIG_DEFAULTS.enabled),
+    autoInstall: operatorBool(record, "autoInstall", OPERATOR_CONFIG_DEFAULTS.autoInstall),
+    autoIndex: operatorBool(record, "autoIndex", OPERATOR_CONFIG_DEFAULTS.autoIndex),
+    allowedProjectRoots: roots,
+    codegraphCommand:
+      typeof command === "string" && command.trim().length > 0
+        ? command.trim()
+        : OPERATOR_CONFIG_DEFAULTS.codegraphCommand,
+  };
+}
+
+/**
+ * Merge an edited config into the stored document.
+ *
+ * A merge rather than a replace, for the reason `governance/merge.ts` exists:
+ * the API replaces the whole `configJson`, so writing only the five fields this
+ * page shows would delete anything else the document holds. `instanceConfigSchema`
+ * is closed so a well-formed document has nothing else — but a document written
+ * by an older version of this plugin does (0.6.0's seventeen keys), and silently
+ * dropping those on a Settings save is exactly the class of bug that made
+ * `mergeGovernance` necessary.
+ *
+ * `undefined` means "leave as stored", `null`/`[]`/`""` mean what they say, so the
+ * form can distinguish an untouched field from a deliberately cleared one.
+ */
+export function mergeOperatorConfig(
+  stored: unknown,
+  edits: Partial<OperatorConfig>,
+): Record<string, unknown> {
+  // Arrays are objects, and spreading one yields `{0: …, 1: …}` rather than a
+  // document. An array is therefore treated as empty, matching
+  // `readOperatorConfig`.
+  const base =
+    typeof stored === "object" && stored !== null && !Array.isArray(stored)
+      ? { ...(stored as Record<string, unknown>) }
+      : {};
+
+  for (const [key, value] of Object.entries(edits)) {
+    if (value === undefined) continue;
+    base[key] = value;
+  }
+  return base;
+}

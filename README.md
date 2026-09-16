@@ -27,6 +27,7 @@ Company B ──┘                          └── repo B  (.codegraph index
   - [Governance profiles](#governance-profiles)
 - [Multi-org governance examples](#multi-org-governance-examples)
 - [Tools exposed](#tools-exposed)
+- [The three surfaces](#the-three-surfaces)
 - [The CodeGraph page](#the-codegraph-page)
 - [Why `projectPath` is not exposed](#why-projectpath-is-not-exposed)
 - [Choosing between the two integration paths](#choosing-between-the-two-integration-paths)
@@ -344,25 +345,57 @@ governance-resolved set, for two reasons: leaving it unset would advertise one
 tool, and setting it means **CodeGraph itself refuses a tool this scope may not
 call**. Enforcement therefore does not rest on this plugin's code alone.
 
+## The three surfaces
+
+Agents get the eight tools. Humans get three places to look, each chosen to match
+how Paperclip mounts plugin UI — the host renders a `sidebar` slot inside its nav
+column (`ui/src/components/Sidebar.tsx`), a `settingsPage` slot inside Settings →
+Plugins (`ui/src/pages/PluginSettings.tsx`), and turns a `page` slot into a route
+(`ui/src/App.tsx`). A page slot adds **no nav entry**, so without the sidebar link
+the URL would exist and nothing would point at it.
+
+| Surface | Where | What it is |
+|---|---|---|
+| **CodeGraph** | the nav column | A link to the graph page, with an index-status dot. Not a panel: a nav column is for going places. |
+| **CodeGraph** | `/:companyPrefix/codegraph` | The graph itself. |
+| **CodeGraph** | Settings → Plugins | All configuration. |
+
+### Settings → Plugins → CodeGraph
+
+Everything an operator can change:
+
+- **Configuration** — enable, auto-install, auto-index, the CodeGraph executable,
+  and allowed repository directories.
+- **Activate** — creates the Paperclip tool profile and MCP gateway that make the
+  tools callable. Safe to run twice.
+- **Repositories** — this org's repositories with file/node counts, and **Index
+  now** / **Rebuild**.
+- **Who may use it** — per-agent switches, on by default. This can only narrow.
+
+> **Why the page has to own the config form.** Declaring a `settingsPage` slot
+> makes the host render *your* component **instead of** its auto-generated
+> `PluginConfigForm` — it is `hasCustomSettingsPage ? <PluginSlotMount/> :
+> hasConfigSchema ? <PluginConfigForm/> : …`, an either/or. So a plugin that
+> declares one takes responsibility for the whole Configuration tab, including
+> the fields the operator already had. Omitting the config section would not have
+> hidden the form; it would have silently removed the ability to switch CodeGraph
+> on at all. Saving merges into the stored document, so a key this form does not
+> show is never dropped.
+
 ## The CodeGraph page
 
-Agents get the eight tools. Humans get a page: **`/:companyPrefix/codegraph`**.
-
-It reads the same index the tools read and draws it, so there is no second server
-to run and no second copy of the code to keep in sync. That is a constraint, not
-a preference: plugin UI routes return JSON only, and CodeGraph's own viewer binds
-loopback, so the page cannot embed it. The worker reads the index and the page
-draws what comes back.
-
-What is on the page:
+The graph is read from the same index the tools read and drawn in the browser, so
+there is no second server to run and no second copy of the code to keep in sync.
+That is a constraint, not a preference: plugin UI routes return JSON only, and
+CodeGraph's own viewer binds loopback, so the page cannot embed it.
 
 | Control | Effect |
 |---|---|
-| **Repository** | Which of this org's projects to draw. Only repositories with an index are drawn; an unindexed one says so instead of showing an empty canvas. |
+| **Repository** | Which of this org's projects to draw. Only indexed repositories are drawn; an unindexed one says so instead of showing an empty canvas. |
 | **Find a symbol** | Name search across the repository's index. Picking a result draws its graph. |
 | **Depth** | 1–3 hops. Deeper graphs are capped at 250 symbols, and the page says when it capped. |
 | **The graph** | Callers above, callees below. Click a node for its source; double-click to re-centre on it. |
-| **Source** | A bounded, line-numbered excerpt from the working tree, with the file and line range. |
+| **Source** | A bounded, line-numbered excerpt from the working tree, with file and line range. |
 
 The layout is **layered, not force-directed**, and that is the whole design. A
 force layout scatters the same graph differently on every render and answers no
