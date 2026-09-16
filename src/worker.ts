@@ -756,12 +756,20 @@ const plugin = definePlugin({
         alias: null as string | null,
       };
 
+      // Set from the company's own bindings: a relative path needs the folder,
+      // an absolute one does not.
+      let folderRequired = false;
+
       if (!configError) {
         const document = await new GovernanceStore(ctx.state).loadForResolve(companyId);
         const resolved = resolveScope(document, {
           companyId,
           pluginEnabled: scoped.enabled,
         });
+        const boundProjects = Object.values(
+          document.companies[companyId]?.projects ?? {},
+        );
+        folderRequired = boundProjects.some((binding) => !path.isAbsolute(binding.path));
         if (resolved.allowed && resolved.project) {
           repository.key = resolved.project.projectKey;
           repository.alias = resolved.project.projectKey;
@@ -783,7 +791,15 @@ const plugin = definePlugin({
       return {
         enabled: scoped.enabled,
         codegraph: { ok: binary.ok, version: binary.version, detail: binary.detail },
-        folder: { configured: root !== null, alias: root ? path.basename(root) : null },
+        folder: {
+          configured: root !== null,
+          alias: root ? path.basename(root) : null,
+          // The folder is a convenience, not a requirement: a company whose
+          // repositories are all bound by absolute path does not need it. Only a
+          // *relative* binding depends on it, so that is what makes it required —
+          // otherwise the page shows a red cross next to a working setup.
+          required: folderRequired,
+        },
         repository,
       };
     });

@@ -59,7 +59,8 @@ const PROFILE_TOOL_NAMES = [...READ_ONLY_TOOL_NAMES, "codegraph_request_access"]
 interface Readiness {
   enabled: boolean;
   codegraph: { ok: boolean; version: string | null; detail: string };
-  folder: { configured: boolean; alias: string | null };
+  /** `required` is true only when a bound repository path is relative. */
+  folder: { configured: boolean; alias: string | null; required?: boolean };
   repository: { configured: boolean; key: string | null; indexed: boolean; alias: string | null };
 }
 
@@ -292,11 +293,13 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
               good={`CodeGraph ${readiness.codegraph.version ?? ""} found`}
               bad={readiness.codegraph.detail}
             />
-            <StatusLine
-              ok={readiness.folder.configured}
-              good={`Repositories directory: ${readiness.folder.alias ?? ""}`}
-              bad='No repositories directory set — open the "Repositories directory" setting above'
-            />
+            {readiness.folder.configured || readiness.folder.required ? (
+              <StatusLine
+                ok={readiness.folder.configured}
+                good={`Repositories directory: ${readiness.folder.alias ?? ""}`}
+                bad='Repositories are named relative to a directory that is not set — open the "Repositories directory" setting above, or give absolute paths below'
+              />
+            ) : null}
             <StatusLine
               ok={readiness.repository.indexed}
               good={`Repository "${readiness.repository.alias ?? ""}" is indexed`}
