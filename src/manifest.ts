@@ -38,6 +38,9 @@ const manifest: PaperclipPluginManifestV1 = {
     // `companies.read` and `projects.read` were declared and never used: the
     // plugin reads no company and calls no `projects.list`/`projects.get`.
     "project.workspaces.read",
+    // Lists this org's projects so the sidebar can show its repositories and
+    // whether each is indexed.
+    "projects.read",
     "agents.read",
     // The governance document (which company may read which codebase).
     "plugin.state.read",
@@ -48,6 +51,8 @@ const manifest: PaperclipPluginManifestV1 = {
     // Required by the settingsPage slot below. The host validates this pairing
     // and rejects the manifest without it, naming the capability in the error.
     "instance.settings.register",
+    // The sidebar entry below.
+    "ui.sidebar.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -60,6 +65,14 @@ const manifest: PaperclipPluginManifestV1 = {
         id: "codegraph-settings",
         displayName: "CodeGraph",
         exportName: "SettingsPage",
+      },
+      {
+        // Where the operator actually works: repositories with index status and
+        // an Index now button, plus the per-agent switches.
+        type: "sidebar",
+        id: "codegraph-sidebar",
+        displayName: "CodeGraph",
+        exportName: "CodeGraphSidebar",
       },
     ],
   },

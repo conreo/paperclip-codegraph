@@ -25,6 +25,7 @@ import {
   usePluginAction,
   usePluginData,
   type PluginSettingsPageProps,
+  type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
 
 import {
@@ -66,6 +67,13 @@ const READ_ONLY_TOOL_NAMES = TOOL_SUFFIXES.map((name) => `codegraph_${name}`);
  * Paperclip owns, so there is nothing for an agent to request.
  */
 const PROFILE_TOOL_NAMES = READ_ONLY_TOOL_NAMES;
+
+interface AgentRow {
+  id: string;
+  name: string;
+  /** Absent means allowed — the default is on, and switches only narrow. */
+  enabled?: boolean;
+}
 
 interface Readiness {
   enabled: boolean;
@@ -352,6 +360,8 @@ const styles: Record<string, CSSProperties> = {
   page: { maxWidth: 720, fontFamily: "inherit", color: "inherit" },
   h2: { fontSize: 18, fontWeight: 600, margin: "0 0 4px" },
   h3: { fontSize: 14, fontWeight: 600, margin: "0 0 8px" },
+  h4: { fontSize: 12, fontWeight: 600, margin: "16px 0 4px", textTransform: "uppercase", letterSpacing: 0.4 },
+  repoHead: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, marginBottom: 8 },
   muted: { color: "var(--muted-foreground, #6b7280)", fontSize: 13 },
   card: {
     border: "1px solid var(--border, #e5e7eb)",
@@ -407,3 +417,184 @@ const styles: Record<string, CSSProperties> = {
     border: "1px solid transparent",
   },
 };
+
+
+// ---------------------------------------------------------------------------
+// Sidebar entry — where the operator actually works
+// ---------------------------------------------------------------------------
+
+interface RepoRow {
+  projectId: string;
+  name: string;
+  alias: string;
+  indexed: boolean;
+  fileCount?: number | null;
+  nodeCount?: number | null;
+  lastIndexed?: string | null;
+}
+
+/**
+ * The sidebar panel.
+ *
+ * Two things, and deliberately no third: the org's repositories with their index
+ * state and a way to (re)build them, and per-agent switches. Everything else is
+ * derived — the repository from the agent's project, membership from Paperclip —
+ * so there is nothing here that could widen access, only narrow it.
+ */
+export function CodeGraphSidebar({ context }: PluginSidebarProps) {
+  const companyId = context.companyId;
+
+  const { data: readiness } = usePluginData<Readiness>("readiness");
+  const { data: repos, loading: reposLoading } = usePluginData<{ repositories: RepoRow[] }>(
+    "repositories",
+  );
+  const { data: access } = usePluginData<{ agents: AgentRow[]; toolCount: number }>("access");
+
+  const indexNow = usePluginAction("index-now");
+  const setAccess = usePluginAction("set-access");
+
+  const [granted, setGranted] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+
+  // Everyone is on by default; the switches exist only to narrow.
+  useEffect(() => {
+    if (!access) return;
+    setGranted((current) =>
+      Object.keys(current).length > 0
+        ? current
+        // `!== false` rather than a truthy check: an absent override means the
+        // agent is allowed, so the default must read as on.
+        : Object.fromEntries(access.agents.map((agent) => [agent.id, agent.enabled !== false])),
+    );
+  }, [access]);
+
+  const runIndex = useCallback(
+    async (projectId: string, reindex: boolean) => {
+      if (!companyId) return;
+      setBusy(`${projectId}:${reindex ? "rebuild" : "index"}`);
+      setMessage(null);
+      try {
+        await indexNow({ companyId, projectId, reindex });
+        setMessage({
+          kind: "ok",
+          text: reindex ? "Rebuild started — reopen this panel to see it finish." : "Indexed.",
+        });
+      } catch (error) {
+        setMessage({ kind: "error", text: sanitizeErrorMessage(error) });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [companyId, indexNow],
+  );
+
+  const saveAccess = useCallback(async () => {
+    if (!companyId || !access) return;
+    setBusy("access");
+    setMessage(null);
+    try {
+      await setAccess({
+        companyId,
+        grantedAgentIds: access.agents.filter((a) => granted[a.id]).map((a) => a.id),
+        listedAgentIds: access.agents.map((a) => a.id),
+      });
+      setMessage({ kind: "ok", text: "Saved." });
+    } catch (error) {
+      setMessage({ kind: "error", text: sanitizeErrorMessage(error) });
+    } finally {
+      setBusy(null);
+    }
+  }, [access, companyId, granted, setAccess]);
+
+  if (!companyId) return <p style={styles.muted}>Open a company to use CodeGraph.</p>;
+
+  const repositories = repos?.repositories ?? [];
+
+  return (
+    <div style={styles.page}>
+      <h3 style={styles.h3}>CodeGraph</h3>
+      {readiness ? (
+        <ul style={styles.list}>
+          <StatusLine
+            ok={readiness.codegraph.ok}
+            good={`CodeGraph ${readiness.codegraph.version ?? ""}`}
+            bad={readiness.codegraph.detail}
+          />
+        </ul>
+      ) : null}
+
+      <h4 style={styles.h4}>Repositories</h4>
+      {reposLoading ? (
+        <p style={styles.muted}>Loading…</p>
+      ) : repositories.length === 0 ? (
+        <p style={styles.muted}>
+          No repositories yet. One appears once a project in this company has a workspace.
+        </p>
+      ) : (
+        repositories.map((repo) => (
+          <div key={repo.projectId} style={styles.card}>
+            <div style={styles.repoHead}>
+              <strong>{repo.alias}</strong>
+              <span style={repo.indexed ? styles.good : styles.muted}>
+                {repo.indexed
+                  ? `${repo.fileCount ?? "?"} files · ${repo.nodeCount ?? "?"} nodes`
+                  : "not indexed"}
+              </span>
+            </div>
+            <div style={styles.row}>
+              <button
+                style={styles.button}
+                disabled={busy !== null}
+                onClick={() => void runIndex(repo.projectId, false)}
+              >
+                {busy === `${repo.projectId}:index` ? "Indexing…" : "Index now"}
+              </button>
+              <button
+                style={styles.button}
+                disabled={busy !== null}
+                onClick={() => void runIndex(repo.projectId, true)}
+              >
+                {busy === `${repo.projectId}:rebuild` ? "Rebuilding…" : "Rebuild"}
+              </button>
+            </div>
+          </div>
+        ))
+      )}
+
+      <h4 style={styles.h4}>Who may use it</h4>
+      <p style={styles.muted}>
+        On for every agent by default. Untick to restrict — this can only narrow.
+      </p>
+      {access && access.agents.length > 0 ? (
+        <>
+          <ul style={styles.list}>
+            {access.agents.map((agent) => (
+              <li key={agent.id} style={styles.checkRow}>
+                <label style={styles.checkLabel}>
+                  <input
+                    type="checkbox"
+                    checked={granted[agent.id] ?? false}
+                    onChange={(event) =>
+                      setGranted((current) => ({ ...current, [agent.id]: event.target.checked }))
+                    }
+                  />
+                  {agent.name}
+                </label>
+              </li>
+            ))}
+          </ul>
+          <button style={styles.button} disabled={busy !== null} onClick={() => void saveAccess()}>
+            {busy === "access" ? "Saving…" : "Save access"}
+          </button>
+        </>
+      ) : (
+        <p style={styles.muted}>No agents in this company yet.</p>
+      )}
+
+      {message ? (
+        <p style={message.kind === "ok" ? styles.good : styles.bad}>{message.text}</p>
+      ) : null}
+    </div>
+  );
+}

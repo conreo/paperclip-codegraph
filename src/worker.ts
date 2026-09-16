@@ -78,6 +78,7 @@ import {
   isIndexed,
   rebuildIndex,
 } from "./codegraph/manage.js";
+import { mergeGovernance } from "./governance/merge.js";
 import {
   acceptWorkspacePath,
   buildWorkspaceGovernance,
@@ -832,6 +833,94 @@ const plugin = definePlugin({
       };
     });
 
+    /**
+     * This org's repositories, taken from its own Paperclip projects.
+     *
+     * Read-only and display-only: a repository is not configured here, it follows
+     * the agent's project. What the operator needs from this list is whether each
+     * one is indexed and a way to index it.
+     */
+    ctx.data.register("repositories", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) return { repositories: [] };
+
+      const { config: scoped, error } = await loadConfig(ctx, companyId);
+      if (error) return { repositories: [], error };
+      const env = mcpEnv(scoped);
+      const binary = await ensureBinary({
+        command: scoped.codegraphCommand,
+        autoInstall: false,
+        version: scoped.codegraphVersion,
+        timeoutMs: 15_000,
+        env,
+      });
+      const roots = containmentRoots(scoped, await repositoryRoot(ctx, companyId));
+
+      const repositories: Array<Record<string, unknown>> = [];
+      let projects: Array<{ id: string; name?: string }> = [];
+      try {
+        projects = await ctx.projects.list({ companyId, limit: 200, offset: 0 });
+      } catch {
+        return { repositories: [], detail: "This org has no readable projects." };
+      }
+
+      for (const project of projects) {
+        try {
+          const workspace = await ctx.projects.getPrimaryWorkspace(project.id, companyId);
+          const path_ = acceptWorkspacePath(workspace?.path, roots);
+          if (!path_) continue;
+          const entry: Record<string, unknown> = {
+            projectId: project.id,
+            name: project.name ?? path.basename(path_),
+            // Alias only — this feeds a UI and must not disclose host layout.
+            alias: path.basename(path_),
+            indexed: await isIndexed(path_),
+          };
+          if (entry["indexed"] && binary.ok) {
+            const status = await indexStatus({
+              projectPath: path_,
+              command: binary.resolvedPath ?? scoped.codegraphCommand,
+              timeoutMs: 20_000,
+              env,
+            });
+            const parsed = (status.parsed ?? {}) as Record<string, unknown>;
+            entry["fileCount"] = parsed["fileCount"] ?? null;
+            entry["nodeCount"] = parsed["nodeCount"] ?? null;
+            entry["lastIndexed"] = parsed["lastIndexed"] ?? null;
+          }
+          repositories.push(entry);
+        } catch {
+          // A project with no usable workspace is simply not listed.
+        }
+      }
+
+      return { repositories, codegraph: { ok: binary.ok, version: binary.version } };
+    });
+
+    /**
+     * Who may use CodeGraph.
+     *
+     * Default is everyone: an agent working in one of this org's projects reads
+     * that project's repository, and Paperclip already decides who works where.
+     * Unticking is the only edit this surface offers, so it can only narrow.
+     */
+    ctx.data.register("access", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) return { agents: [] };
+      const document = await new GovernanceStore(ctx.state).loadForResolve(companyId);
+      const overrides = document.companies[companyId]?.agents ?? {};
+      const rows = await ctx.agents.list({ companyId, limit: 200, offset: 0 });
+      return {
+        agents: rows.map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          // Absent override means allowed — the default is on, not off.
+          enabled: overrides[agent.id]?.enabled !== false,
+        })),
+        toolCount: CODEGRAPH_TOOLS.length,
+      };
+    });
+
     /** The company's agents, with names, so the settings page can list them. */
     ctx.data.register("agents", async (params) => {
       const companyId = asString(params?.["companyId"]);
@@ -1125,6 +1214,52 @@ const plugin = definePlugin({
       return { plan, curl: renderPlanAsCurl(plan) };
     });
 
+    /**
+     * Narrow per-agent access.
+     *
+     * Delegates to mergeGovernance, which is already tested for the destructive
+     * case: it preserves projects, policy and any override for an agent the form
+     * did not list, and deletes nothing the operator did not remove. This surface
+     * therefore cannot clear a tool denial or drop another agent's settings.
+     */
+    ctx.actions.register("set-access", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) throw new Error("companyId is required");
+
+      const granted = toStringArray(params?.["grantedAgentIds"]);
+      const listed = toStringArray(params?.["listedAgentIds"]);
+      if (listed.length === 0) throw new Error("listedAgentIds is required");
+
+      const store = new GovernanceStore(ctx.state);
+      const current = await store.getCompany(companyId);
+
+      const merged = mergeGovernance(
+        current,
+        {
+          // Carried through unchanged: this action narrows agents, not repositories.
+          repositories: Object.values(current?.projects ?? {}).map((binding) => ({
+            key: binding.projectKey,
+            path: binding.path,
+          })),
+          removedRepositoryKeys: [],
+          grantedAgentIds: granted,
+          listedAgentIds: listed,
+        },
+        { defaultAllowedTools: [...CODEGRAPH_TOOLS] },
+      );
+
+      await store.setCompany(companyId, merged);
+
+      await audit(
+        ctx,
+        { companyId, agentId: null, runId: null, paperclipProjectId: null },
+        "CodeGraph access narrowed",
+        { granted: granted.length, listed: listed.length },
+      );
+
+      return { ok: true, granted: granted.length, listed: listed.length };
+    });
+
     ctx.actions.register("shutdown-codegraph", async () => {
       const before = pool.size;
       await pool.closeAll();
@@ -1188,6 +1323,11 @@ export function extractServedFiles(text: string): string[] {
     }
   }
   return [...found].sort();
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
 }
 
 function asString(value: unknown): string | null {
