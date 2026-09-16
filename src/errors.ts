@@ -33,8 +33,45 @@ const TOKEN_LIKE = /[A-Za-z0-9]{20,}/g;
 /** Drizzle/Paperclip's raw SQL echo, with or without bound params. */
 const RAW_QUERY = /failed query:/i;
 
+/**
+ * Pull a readable message out of whatever was thrown.
+ *
+ * The last resort used to be `String(raw)`, which turns a thrown *object* into
+ * `"[object Object]"` — a string that tells an operator nothing and hides the one
+ * fact worth having. The plugin bridge throws plain objects of its own
+ * (`{ code, message, details }`), so plain objects are normalised by looking for
+ * the fields that carry a message, most specific first. Anything still unreadable
+ * is JSON-stringified rather than string-concatenated, so the shape survives.
+ */
+function messageFrom(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (raw instanceof Error) return raw.message;
+
+  if (typeof raw === "object" && raw !== null) {
+    const record = raw as Record<string, unknown>;
+    for (const key of ["message", "error", "detail", "reason"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim().length > 0) return value;
+      // An envelope wrapping another envelope: `{ error: { message } }`.
+      if (typeof value === "object" && value !== null) {
+        const nested = (value as Record<string, unknown>)["message"];
+        if (typeof nested === "string" && nested.trim().length > 0) return nested;
+      }
+    }
+    try {
+      return JSON.stringify(raw) ?? String(raw);
+    } catch {
+      // A circular structure cannot be serialised; the generic form is all that
+      // is left, and it is still better than throwing from a formatter.
+      return String(raw);
+    }
+  }
+
+  return String(raw);
+}
+
 export function sanitizeErrorMessage(raw: unknown): string {
-  const text = typeof raw === "string" ? raw : raw instanceof Error ? raw.message : String(raw);
+  const text = messageFrom(raw);
 
   // The SQL echo is dropped whole rather than redacted in place: its parameters
   // are the sensitive part, and a partially redacted statement is still no use to

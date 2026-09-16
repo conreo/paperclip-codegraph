@@ -21,10 +21,11 @@ import { usePluginData, useHostNavigation, type PluginSidebarProps } from "@pape
 
 import { StatusLine, styles } from "./chrome.js";
 import { sidebarStatus, type SidebarReadiness } from "./sidebar-status.js";
+import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
 
 export function CodeGraphSidebar({ context }: PluginSidebarProps) {
   const navigation = useHostNavigation();
-  const { data: readiness } = usePluginData<SidebarReadiness>("readiness");
+  const { data: readiness } = usePluginData<SidebarReadiness>(DATA_KEYS.readiness);
   const status = sidebarStatus(readiness);
 
   // Outside a company there is no `/codegraph` route to link to, so the entry

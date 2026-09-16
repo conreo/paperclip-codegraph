@@ -52,6 +52,7 @@ import {
   MAX_SOURCE_LINES,
 } from "./constants.js";
 import { normalizeConfig, type RuntimeConfig } from "./config.js";
+import { ACTION_KEYS, DATA_KEYS } from "./plugin-keys.js";
 import { CodeGraphClientPool, buildChildEnv } from "./mcp/client.js";
 import {
   CODEGRAPH_TOOL_SPECS,
@@ -695,7 +696,7 @@ const plugin = definePlugin({
     // decisions, never host paths.
     // -----------------------------------------------------------------
 
-    ctx.data.register("governance-summary", async (params) => {
+    ctx.data.register(DATA_KEYS.governanceSummary, async (params) => {
       const companyId = asString(params?.["companyId"]);
       const store = new GovernanceStore(ctx.state);
       const document = companyId
@@ -727,7 +728,7 @@ const plugin = definePlugin({
      * repositories directory set, repository indexed — and reports each one
      * independently, so the page never shows a blank failure.
      */
-    ctx.data.register("readiness", async (params) => {
+    ctx.data.register(DATA_KEYS.readiness, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) {
         return {
@@ -812,7 +813,7 @@ const plugin = definePlugin({
      * Read-only, and the alias rather than the path: this feeds a UI, so it must
      * not disclose the host's layout.
      */
-    ctx.data.register("index-status", async (params) => {
+    ctx.data.register(DATA_KEYS.indexStatus, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) return { repositories: [], codegraph: null };
 
@@ -927,7 +928,7 @@ const plugin = definePlugin({
      * the agent's project. What the operator needs from this list is whether each
      * one is indexed and a way to index it.
      */
-    ctx.data.register("repositories", async (params) => {
+    ctx.data.register(DATA_KEYS.repositories, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) return { repositories: [] };
 
@@ -1010,7 +1011,7 @@ const plugin = definePlugin({
      * status page and wrong for a selector: it spawns a process per project on
      * every load. This one only asks whether the index file exists.
      */
-    ctx.data.register("graph-projects", async (params) => {
+    ctx.data.register(DATA_KEYS.graphProjects, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) return { repositories: [] };
 
@@ -1140,7 +1141,7 @@ const plugin = definePlugin({
      * reports the chain the plugin actually followed, with host layout redacted
      * the same way the rest of the plugin redacts it.
      */
-    ctx.data.register("graph-diagnose", async (params) => {
+    ctx.data.register(DATA_KEYS.graphDiagnose, async (params) => {
       const companyId = asString(params?.["companyId"]);
       const projectId = asString(params?.["projectId"]);
       if (!companyId || !projectId) return { error: "companyId and projectId are required" };
@@ -1187,7 +1188,7 @@ const plugin = definePlugin({
     });
 
     /** Symbol search in one of this org's repositories. */
-    ctx.data.register("graph-search", async (params) => {
+    ctx.data.register(DATA_KEYS.graphSearch, async (params) => {
       const companyId = asString(params?.["companyId"]);
       const query = asString(params?.["query"]);
       if (!companyId || !query) return { results: [] };
@@ -1203,7 +1204,7 @@ const plugin = definePlugin({
     });
 
     /** The call neighbourhood around one symbol, for the graph view. */
-    ctx.data.register("graph-neighbourhood", async (params) => {
+    ctx.data.register(DATA_KEYS.graphNeighbourhood, async (params) => {
       const companyId = asString(params?.["companyId"]);
       const nodeId = asString(params?.["nodeId"]);
       if (!companyId || !nodeId) return { error: "companyId and nodeId are required" };
@@ -1230,7 +1231,7 @@ const plugin = definePlugin({
      * containment before anything is read; only a capped excerpt is returned,
      * and it is line-numbered so the excerpt is self-describing.
      */
-    ctx.data.register("graph-source", async (params) => {
+    ctx.data.register(DATA_KEYS.graphSource, async (params) => {
       const companyId = asString(params?.["companyId"]);
       const nodeId = asString(params?.["nodeId"]);
       if (!companyId || !nodeId) return { excerpt: null };
@@ -1271,7 +1272,7 @@ const plugin = definePlugin({
      * that project's repository, and Paperclip already decides who works where.
      * Unticking is the only edit this surface offers, so it can only narrow.
      */
-    ctx.data.register("access", async (params) => {
+    ctx.data.register(DATA_KEYS.access, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) return { agents: [] };
       const document = await new GovernanceStore(ctx.state).loadForResolve(companyId);
@@ -1289,7 +1290,7 @@ const plugin = definePlugin({
     });
 
     /** The company's agents, with names, so the settings page can list them. */
-    ctx.data.register("agents", async (params) => {
+    ctx.data.register(DATA_KEYS.agents, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) return { agents: [] };
       const rows = await ctx.agents.list({ companyId, limit: 200, offset: 0 });
@@ -1306,7 +1307,7 @@ const plugin = definePlugin({
      * This is the call an operator (or a CI job) uses to prove that a company's
      * binding actually reads that company's codebase.
      */
-    ctx.data.register("verify-scope", async (params) => {
+    ctx.data.register(DATA_KEYS.verifyScope, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) return { ok: false, error: "companyId is required" };
 
@@ -1415,7 +1416,7 @@ const plugin = definePlugin({
     // run context.
     // -----------------------------------------------------------------
 
-    ctx.actions.register("get-governance", async (params) => {
+    ctx.actions.register(ACTION_KEYS.getGovernance, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (companyId) {
         const company = await new GovernanceStore(ctx.state).getCompany(companyId);
@@ -1424,7 +1425,7 @@ const plugin = definePlugin({
       return { governance: await new GovernanceStore(ctx.state).loadAll() };
     });
 
-    ctx.actions.register("set-company-governance", async (params) => {
+    ctx.actions.register(ACTION_KEYS.setCompanyGovernance, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) throw new Error("companyId is required");
       const governance = params?.["governance"];
@@ -1465,14 +1466,14 @@ const plugin = definePlugin({
       return { ok: true, companyId, projects: Object.keys(normalized.projects ?? {}) };
     });
 
-    ctx.actions.register("delete-company-governance", async (params) => {
+    ctx.actions.register(ACTION_KEYS.deleteCompanyGovernance, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) throw new Error("companyId is required");
       await new GovernanceStore(ctx.state).deleteCompany(companyId);
       return { ok: true, companyId };
     });
 
-    ctx.actions.register("set-instance-defaults", async (params) => {
+    ctx.actions.register(ACTION_KEYS.setInstanceDefaults, async (params) => {
       const defaults = params?.["defaults"];
       if (typeof defaults !== "object" || defaults === null) {
         throw new Error("defaults must be an object");
@@ -1488,7 +1489,7 @@ const plugin = definePlugin({
      * This is the tool an operator reaches for when an agent reports a denial,
      * and the tool a test asserts isolation with.
      */
-    ctx.actions.register("explain-scope", async (params) => {
+    ctx.actions.register(ACTION_KEYS.explainScope, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) throw new Error("companyId is required");
       const { config } = await loadConfig(ctx, companyId);
@@ -1524,7 +1525,7 @@ const plugin = definePlugin({
       };
     });
 
-    ctx.actions.register("verify-codegraph", async (params) => {
+    ctx.actions.register(ACTION_KEYS.verifyCodegraph, async (params) => {
       const companyId = asString(params?.["companyId"]);
       const { config, error } = await loadConfig(ctx, companyId ?? undefined);
       if (error) return { ok: false, detail: error };
@@ -1561,7 +1562,7 @@ const plugin = definePlugin({
      * The native-Paperclip-MCP provisioning plan (see `governance/provision.ts`).
      * Returned as data so it can be reviewed before anything is created.
      */
-    ctx.actions.register("native-mcp-plan", async (params) => {
+    ctx.actions.register(ACTION_KEYS.nativeMcpPlan, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) throw new Error("companyId is required");
       const { config } = await loadConfig(ctx, companyId);
@@ -1582,6 +1583,78 @@ const plugin = definePlugin({
     });
 
     /**
+     * Build or rebuild the index for one of this org's repositories.
+     *
+     * A full rebuild is `codegraph index <path>`, which upstream implements by
+     * recreating the database — disk-intensive, so it is an explicit operator
+     * action and never something an agent can trigger. `reindex: false` takes the
+     * cheaper path and is still an explicit request, so it indexes even when
+     * `autoIndex` is off.
+     *
+     * This action was **silently lost** in the 0.7.0 refactor that removed the
+     * agent access-request flow: the commit deleted it along with unrelated code,
+     * and nothing caught it because no test asserted that the keys the UI calls
+     * have handlers. The UI kept calling `index-now` and the bridge answered with
+     * an error object that rendered as `[object Object]`. Restored against the
+     * current API — the caller sends a Paperclip `projectId` and the path is
+     * resolved through the host, as everywhere else.
+     */
+    ctx.actions.register(ACTION_KEYS.indexNow, async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      const projectId = asString(params?.["projectId"]);
+      if (!companyId || !projectId) {
+        throw new Error("companyId and projectId are required");
+      }
+      const reindex = params?.["reindex"] === true;
+
+      const { config: scoped, error } = await loadConfig(ctx, companyId);
+      if (error) throw new Error(error);
+
+      const projectPath = await repositoryForProject(companyId, projectId);
+      const env = mcpEnv(scoped);
+
+      const binary = await ensureBinary({
+        command: scoped.codegraphCommand,
+        autoInstall: scoped.autoInstall,
+        version: scoped.codegraphVersion,
+        // Installing CodeGraph can take a while, and this is a button press with
+        // a person waiting, so the ceiling is generous rather than the startup
+        // timeout meant for a warm call.
+        timeoutMs: Math.max(scoped.startupTimeoutMs, 300_000),
+        env,
+      });
+      if (!binary.ok || !binary.resolvedPath) throw new Error(binary.detail);
+
+      const result = reindex
+        ? await rebuildIndex({
+            projectPath,
+            command: binary.resolvedPath,
+            timeoutMs: scoped.indexTimeoutMs,
+            env,
+          })
+        : await ensureIndex({
+            projectPath,
+            // An explicit request, so index even though autoIndex may be off.
+            autoIndex: true,
+            command: binary.resolvedPath,
+            timeoutMs: scoped.indexTimeoutMs,
+            env,
+          });
+
+      const alias = path.basename(projectPath);
+      await audit(
+        ctx,
+        { companyId, agentId: null, runId: null, paperclipProjectId: projectId },
+        `CodeGraph index ${result.ok ? "completed" : "failed"} for "${alias}"`,
+        { projectId, reindex, ok: result.ok, detail: result.detail.slice(0, 300) },
+      );
+
+      // A failed index is reported as a result rather than thrown: the caller
+      // needs to show what CodeGraph said, and "the action threw" loses that.
+      return { ok: result.ok, projectId, alias, reindex, detail: result.detail };
+    });
+
+    /**
      * The primary access control: whether this org may read one repository.
      *
      * A targeted edit rather than a whole-form save, because the caller knows
@@ -1594,7 +1667,7 @@ const plugin = definePlugin({
      * unblocking removes that flag, and the company binding still has to allow
      * the repository — and Paperclip still has to allow the tool.
      */
-    ctx.actions.register("set-repository-access", async (params) => {
+    ctx.actions.register(ACTION_KEYS.setRepositoryAccess, async (params) => {
       const companyId = asString(params?.["companyId"]);
       const projectId = asString(params?.["projectId"]);
       if (!companyId || !projectId) {
@@ -1626,7 +1699,7 @@ const plugin = definePlugin({
      * cannot disturb another — `mergeGovernance`'s whole-form shape is kept below
      * for the older surface.
      */
-    ctx.actions.register("set-agent-access", async (params) => {
+    ctx.actions.register(ACTION_KEYS.setAgentAccess, async (params) => {
       const companyId = asString(params?.["companyId"]);
       const agentId = asString(params?.["agentId"]);
       if (!companyId || !agentId) throw new Error("companyId and agentId are required");
@@ -1655,7 +1728,7 @@ const plugin = definePlugin({
      * did not list, and deletes nothing the operator did not remove. This surface
      * therefore cannot clear a tool denial or drop another agent's settings.
      */
-    ctx.actions.register("set-access", async (params) => {
+    ctx.actions.register(ACTION_KEYS.setAccess, async (params) => {
       const companyId = asString(params?.["companyId"]);
       if (!companyId) throw new Error("companyId is required");
 
@@ -1693,7 +1766,7 @@ const plugin = definePlugin({
       return { ok: true, granted: granted.length, listed: listed.length };
     });
 
-    ctx.actions.register("shutdown-codegraph", async () => {
+    ctx.actions.register(ACTION_KEYS.shutdownCodegraph, async () => {
       const before = pool.size;
       await pool.closeAll();
       return { ok: true, stopped: before };

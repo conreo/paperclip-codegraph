@@ -77,3 +77,77 @@ describe("sanitizeErrorMessage — ordinary messages", () => {
     expect(sanitizeErrorMessage(null)).toBe("null");
   });
 });
+
+describe("sanitizeErrorMessage — thrown objects", () => {
+  /**
+   * These pin the fix for a real report: an operator saw `[object Object]` where
+   * an error message belonged. The bridge throws plain objects, and the old
+   * formatter's last resort was `String(raw)`, which turns any object into that
+   * string — hiding the one fact worth having.
+   */
+  it("never renders a thrown object as [object Object]", () => {
+    const bridgeError = { code: "WORKER_ERROR", message: "No handler registered for index-now" };
+    expect(sanitizeErrorMessage(bridgeError)).toBe("No handler registered for index-now");
+    expect(sanitizeErrorMessage(bridgeError)).not.toContain("[object");
+  });
+
+  it("reads the message from a bridge-style envelope", () => {
+    expect(sanitizeErrorMessage({ code: "X", message: "worker unavailable", details: {} })).toBe(
+      "worker unavailable",
+    );
+  });
+
+  it("unwraps a nested envelope", () => {
+    // `{ error: { message } }` is what a proxied failure looks like.
+    expect(sanitizeErrorMessage({ error: { message: "upstream refused" } })).toBe(
+      "upstream refused",
+    );
+  });
+
+  it("falls back through detail and reason", () => {
+    expect(sanitizeErrorMessage({ detail: "index build failed" })).toBe("index build failed");
+    expect(sanitizeErrorMessage({ reason: "not_indexed" })).toBe("not_indexed");
+  });
+
+  it("prefers message over the other fields", () => {
+    expect(
+      sanitizeErrorMessage({ message: "the real one", detail: "secondary", reason: "why" }),
+    ).toBe("the real one");
+  });
+
+  it("ignores a blank message and uses the next field", () => {
+    expect(sanitizeErrorMessage({ message: "   ", detail: "useful" })).toBe("useful");
+  });
+
+  it("JSON-stringifies an object with no recognisable field", () => {
+    // The shape survives even when nothing in it is a message, which beats both
+    // "[object Object]" and throwing inside a formatter.
+    const result = sanitizeErrorMessage({ unexpected: true, count: 3 });
+    expect(result).toContain("unexpected");
+    expect(result).not.toContain("[object");
+  });
+
+  it("still handles the plain cases", () => {
+    expect(sanitizeErrorMessage("plain string")).toBe("plain string");
+    expect(sanitizeErrorMessage(new Error("thrown error"))).toBe("thrown error");
+    expect(sanitizeErrorMessage(42)).toBe("42");
+    expect(sanitizeErrorMessage(null)).toBe("null");
+    expect(sanitizeErrorMessage(undefined)).toBe("undefined");
+  });
+
+  it("does not throw on a circular object", () => {
+    // A formatter that throws while reporting an error is the worst outcome, so
+    // the circular case must degrade rather than propagate.
+    const circular: Record<string, unknown> = { name: "loop" };
+    circular["self"] = circular;
+    expect(() => sanitizeErrorMessage(circular)).not.toThrow();
+  });
+
+  it("still redacts tokens inside an object-supplied message", () => {
+    // The redaction runs after extraction, so it applies to messages that arrived
+    // wrapped in an object just as it does to bare strings.
+    const secret = "abcdefghijklmnopqrstuvwx1234";
+    const result = sanitizeErrorMessage({ message: `failed with ${secret}` });
+    expect(result).not.toContain(secret);
+  });
+});

@@ -28,6 +28,7 @@ import {
 
 import { computeLayout, type LayoutEdge, type LayoutNode } from "../graph/layout.js";
 import { sanitizeErrorMessage } from "../errors.js";
+import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
 
 // ---------------------------------------------------------------------------
 // Wire shapes
@@ -93,7 +94,7 @@ export function CodeGraphPage({ context }: PluginPageProps) {
     organization?: string | null;
     repositories: RepoRow[];
     enabled?: boolean;
-  }>("graph-projects", { companyId });
+  }>(DATA_KEYS.graphProjects, { companyId });
 
   const repositories = reposData?.repositories ?? [];
   const organization = reposData?.organization ?? null;
@@ -134,12 +135,12 @@ export function CodeGraphPage({ context }: PluginPageProps) {
   const {
     data: searchData,
     loading: searching,
-  } = usePluginData<SearchResponse>("graph-search", searchParams);
+  } = usePluginData<SearchResponse>(DATA_KEYS.graphSearch, searchParams);
 
   const {
     data: graphData,
     loading: graphLoading,
-  } = usePluginData<NeighbourhoodResponse>("graph-neighbourhood", graphParams);
+  } = usePluginData<NeighbourhoodResponse>(DATA_KEYS.graphNeighbourhood, graphParams);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -149,7 +150,7 @@ export function CodeGraphPage({ context }: PluginPageProps) {
   }, [selectedId, graphData]);
 
   const { data: sourceData, loading: sourceLoading } = usePluginData<SourceResponse>(
-    "graph-source",
+    DATA_KEYS.graphSource,
     { companyId, projectId, nodeId: selectedId },
   );
 

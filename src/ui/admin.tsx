@@ -34,6 +34,7 @@ import {
 import { sanitizeErrorMessage } from "../errors.js";
 import { readOperatorConfig, mergeOperatorConfig, type OperatorConfig } from "../config.js";
 import { StatusLine, styles } from "./chrome.js";
+import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
 
 /** Must match the manifest id; the host namespaces tools with it. */
 const PLUGIN_ID = "paperclip-codegraph";
@@ -138,11 +139,11 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
   const companyId = context.companyId;
 
   const { data: readiness, loading: readinessLoading, error: readinessError } =
-    usePluginData<Readiness>("readiness");
+    usePluginData<Readiness>(DATA_KEYS.readiness);
 
   // The org's name, so the page says whose code it configures. Falls back to the
   // URL prefix, which is the only identity the host context carries.
-  const { data: overview } = usePluginData<{ organization?: string | null }>("graph-projects", {
+  const { data: overview } = usePluginData<{ organization?: string | null }>(DATA_KEYS.graphProjects, {
     companyId,
   });
   const organization = overview?.organization ?? null;
@@ -610,8 +611,8 @@ function Indexing({
   companyId: string;
   onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
 }) {
-  const { data: repos, loading } = usePluginData<{ repositories: RepoRow[] }>("repositories");
-  const indexNow = usePluginAction("index-now");
+  const { data: repos, loading } = usePluginData<{ repositories: RepoRow[] }>(DATA_KEYS.repositories);
+  const indexNow = usePluginAction(ACTION_KEYS.indexNow);
   const [busy, setBusy] = useState<string | null>(null);
 
   const run = useCallback(
@@ -709,8 +710,8 @@ function RepositoryAccess({
     repositories: RepoRow[];
     skippedProjects?: number;
     detail?: string;
-  }>("graph-projects", { companyId });
-  const setRepositoryAccess = usePluginAction("set-repository-access");
+  }>(DATA_KEYS.graphProjects, { companyId });
+  const setRepositoryAccess = usePluginAction(ACTION_KEYS.setRepositoryAccess);
   const [busy, setBusy] = useState<string | null>(null);
 
   const repositories = data?.repositories ?? [];
@@ -813,9 +814,9 @@ function AgentExceptions({
   onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const { data: access } = usePluginData<{ agents: AgentRow[]; toolCount: number }>("access");
-  const { data: agents } = usePluginData<{ agents: AgentRow[] }>("agents");
-  const setAgentAccess = usePluginAction("set-agent-access");
+  const { data: access } = usePluginData<{ agents: AgentRow[]; toolCount: number }>(DATA_KEYS.access);
+  const { data: agents } = usePluginData<{ agents: AgentRow[] }>(DATA_KEYS.agents);
+  const setAgentAccess = usePluginAction(ACTION_KEYS.setAgentAccess);
 
   const rows = access?.agents ?? agents?.agents ?? [];
   const [busy, setBusy] = useState<string | null>(null);
