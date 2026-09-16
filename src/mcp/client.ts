@@ -146,6 +146,19 @@ export function buildChildEnv(
   if (config.useDaemon !== true) {
     env["CODEGRAPH_NO_DAEMON"] = "1";
   }
+  // NOTE on `useDaemon: true` in a multi-tenant deployment.
+  //
+  // Upstream's shared daemon is one process per project path, multiplexed over a
+  // unix socket, and it enforces `CODEGRAPH_MCP_TOOLS` from the *daemon's* own
+  // environment. A stdio proxy's environment does not govern the daemon's
+  // `tools/call` path. So when two governance scopes query the same project path
+  // with different allowlists, the daemon applies whichever allowlist spawned it
+  // first.
+  //
+  // The plugin's own resolver still denies correctly — this only removes the
+  // defence-in-depth layer that makes CodeGraph itself refuse a denied tool.
+  // Direct mode (the default) keeps that layer per scope, which is why it is the
+  // default and why multi-tenant deployments should leave `useDaemon` off.
 
   return env;
 }

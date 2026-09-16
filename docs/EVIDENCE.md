@@ -140,6 +140,48 @@ Found 5 symbols across 1 file.
 company's identifiers, and neither can: `projectPath` is not an argument an agent
 can set.
 
+## 4b. Multiple repositories per organization — 2 repos, one company
+
+The first suite bound each company to a single repository. This second run binds
+**two** repositories to Company A and exercises every selection path, including a
+real Paperclip project (`Identity workstream`, `f81d554a-…`) created for the test.
+
+```
+=== RESOLUTION: two repos bound to ONE company ===
+  default (no agent, no project)             projectKey=payments  reason=allowed
+  agent override -> identity                 projectKey=identity  reason=allowed
+  Paperclip-project override -> identity     projectKey=identity  reason=allowed
+  unrelated agent -> default                 projectKey=payments  reason=allowed
+  agent override beats project override      projectKey=identity  reason=allowed
+```
+
+Precedence is agent → Paperclip project → company default, and an unrelated agent
+correctly falls back rather than erroring.
+
+```
+=== REAL CodeGraph CALLS, two repos in one company ===
+  default -> payments repo             projectKey=payments ok=True files=['index.ts','src/index.ts','src/ledger.ts']
+      -> payments-markers=True identity-markers=False cross-contamination=False
+  agent override -> identity repo      projectKey=identity ok=True files=['src/directory.ts','src/index.ts']
+      -> payments-markers=False identity-markers=True cross-contamination=False
+  project override -> identity repo    projectKey=identity ok=True files=['src/directory.ts','src/index.ts']
+      -> payments-markers=False identity-markers=True cross-contamination=False
+
+RESULT: PASS — each scope served exactly its own repo, no cross-contamination
+```
+
+Markers are the two repositories' own identifiers (`PaymentsLedger` /
+`recordPayment` / `balanceCents` / `ledger` versus `IdentityDirectory` /
+`resolveSubject` / `enrolSubject` / `directory`). Each call was served exactly one
+repository's files, and no answer contained the other's vocabulary.
+
+### Process accounting
+
+With 2 companies, 3 repositories and 2 distinct effective allowlists, the pool
+held **exactly 3 CodeGraph processes** — one per `(projectPath, allowlist)` pair,
+which is the documented keying. `shutdown-codegraph` reported `stopped: 3`,
+confirming the process-group cleanup releases them all.
+
 ## 5. Disabled-by-default, observed
 
 With `enabled: false` (the shipping default), a company-scoped read reports:

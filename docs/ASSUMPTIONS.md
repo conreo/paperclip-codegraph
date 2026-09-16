@@ -156,7 +156,34 @@ Posting to Discord, X/Twitter, LinkedIn, or Reddit needs credentials and account
 this environment does not have. Ready-to-post drafts for each channel are in
 `docs/ANNOUNCEMENTS.md`; nothing was posted.
 
-### 5.4 Not implemented
+### 5.4 `useDaemon: true` weakens the upstream allowlist layer
+
+Upstream's shared daemon is **one process per project path**, multiplexed over a
+unix socket, and it enforces `CODEGRAPH_MCP_TOOLS` from the *daemon's* own
+environment. A stdio proxy's environment does not govern the daemon's
+`tools/call` path. So if two governance scopes query the **same** project path
+with **different** allowlists, the daemon applies whichever allowlist spawned it
+first.
+
+The plugin's own resolver still denies correctly — this only removes the
+defence-in-depth layer that has CodeGraph itself refuse a denied tool. Direct mode
+(`useDaemon: false`, the default) keeps that layer per scope. `setup()` now logs a
+warning when the daemon is enabled. **Leave `useDaemon` off for multi-tenant
+deployments.**
+
+### 5.5 Process count scales with (repository × allowlist), not with company
+
+The pool is keyed on `(command, args, projectPath, toolAllowlist, telemetry flag,
+daemon flag, extraEnv keys)`, so a company with 3 repositories and 2 distinct
+effective allowlists can hold up to 6 CodeGraph processes, each carrying a bundled
+Node runtime and an open SQLite handle. Measured: 3 processes for 3 pairs.
+
+For a large fleet, either keep effective allowlists uniform across a company (so
+one process per repository) or accept the ceiling. `useDaemon: true` would collapse
+this, but see §5.4. The `shutdown-codegraph` action releases every process on
+demand.
+
+### 5.6 Not implemented
 
 - No plugin UI (`settingsPage` slot). Admin surfaces are actions plus the CLI.
 - No optimistic concurrency on the governance document.

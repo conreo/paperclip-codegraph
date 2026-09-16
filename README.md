@@ -456,9 +456,14 @@ Honest list. See `docs/ASSUMPTIONS.md` for the full version with citations.
 
 **Verified in this build**
 
-- Paperclip `2026.817.0`, `local_trusted`, plugin installs `ready`, 157 unit and
-  integration tests pass, 20/20 live E2E isolation checks pass, real
-  `codegraph_explore` calls return real source from the correct repository.
+- Paperclip `2026.817.0`, `local_trusted`, plugin installs `ready` from the npm
+  registry, 157 unit and integration tests pass, 23/23 live isolation checks
+  pass, and real `codegraph_explore` calls return real source from the correct
+  repository.
+- **Multiple repositories per organization is verified live**: two repositories
+  bound to one company, selected by agent override, Paperclip-project override,
+  and company default, with each real call served exactly one repository's files
+  and no cross-contamination between them.
 
 **Known limitations**
 
@@ -491,6 +496,17 @@ Honest list. See `docs/ASSUMPTIONS.md` for the full version with citations.
    Plan priorities accordingly.
 10. **Windows process-group kill** uses a single-process kill rather than a group
     kill; a stray CodeGraph process is possible there.
+11. **Process count scales with (repository × distinct allowlist)**, not with
+    company: one CodeGraph process per pair, each with a bundled Node runtime and
+    an open SQLite handle. Measured 3 processes for 3 pairs. Keep allowlists
+    uniform within a company to get one process per repository, and use the
+    `shutdown-codegraph` action to release them on demand.
+12. **`useDaemon: true` weakens one defence layer.** Upstream's shared daemon is
+    per *project path* and enforces `CODEGRAPH_MCP_TOOLS` from its own
+    environment, so two scopes querying the same path with different allowlists
+    get whichever allowlist started the daemon. This plugin's resolver still
+    denies correctly; CodeGraph just stops refusing denied tools on its own.
+    Leave `useDaemon` off in multi-tenant deployments (it is the default).
 
 **Assumptions**
 

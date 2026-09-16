@@ -496,6 +496,12 @@ const plugin = definePlugin({
       registeredTools.add(spec.name);
     }
 
+    if (config.useDaemon) {
+      ctx.logger.warn(
+        "CodeGraph shared daemon is enabled (useDaemon). The daemon enforces CODEGRAPH_MCP_TOOLS from its own environment, so when several governance scopes query the same project path with different allowlists, upstream applies only the first one's allowlist. This plugin's own resolver still denies correctly, but CodeGraph will no longer refuse a denied tool on its own. Leave useDaemon off for multi-tenant deployments.",
+      );
+    }
+
     ctx.logger.info("paperclip-codegraph registered CodeGraph tools", {
       tools: [...registeredTools],
       command: config.codegraphCommand,
