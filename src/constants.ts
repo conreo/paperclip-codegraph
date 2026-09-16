@@ -34,6 +34,15 @@ export const GOVERNANCE_DOC_VERSION = 1;
  */
 export const CODEGRAPH_FOLDER_KEY = "codegraph-repositories";
 
+/**
+ * The agent-facing tool for asking for access.
+ *
+ * Not a CodeGraph tool: this one is served entirely by the plugin and is not
+ * gated by CodeGraph governance, because an agent without access is exactly the
+ * agent that needs it.
+ */
+export const REQUEST_ACCESS_TOOL = "codegraph_request_access";
+
 /** Manifest version; keep in sync with package.json. */
 export const PLUGIN_VERSION = "0.3.1";
 

@@ -80,8 +80,15 @@ describe("manifest", () => {
     expect(settings?.exportName).toBe("SettingsPage");
   });
 
-  it("declares exactly the eight CodeGraph tools", () => {
-    expect(manifest.tools?.map((tool) => tool.name)).toEqual([...CODEGRAPH_TOOLS]);
+  it("declares the eight CodeGraph tools plus the access-request tool", () => {
+    const names = manifest.tools?.map((tool) => tool.name) ?? [];
+    // The eight governed tools…
+    for (const tool of CODEGRAPH_TOOLS) expect(names).toContain(tool);
+    // …plus the one tool served entirely by the plugin. It is not a CodeGraph
+    // tool and is not gated by CodeGraph governance, because an agent without
+    // access is the agent that needs to ask for it.
+    expect(names).toContain("codegraph_request_access");
+    expect(names).toHaveLength(CODEGRAPH_TOOLS.length + 1);
   });
 
   it("gives every tool a display name, description and object schema", () => {

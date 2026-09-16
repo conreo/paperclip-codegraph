@@ -36,6 +36,7 @@
  *    `allowedProjectRoots`) at call time, not just at write time.
  */
 
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
@@ -43,7 +44,9 @@ import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plu
 
 import {
   CODEGRAPH_FOLDER_KEY,
+  CODEGRAPH_TOOLS,
   PLUGIN_ID,
+  REQUEST_ACCESS_TOOL,
   UPSTREAM_PROJECT_PATH_PARAM,
   MAX_ARG_STRING_CHARS,
 } from "./constants.js";
@@ -71,6 +74,7 @@ import {
 } from "./governance/sanitize.js";
 import { buildNativeMcpPlan, renderPlanAsCurl } from "./governance/provision.js";
 import { ensureBinary, ensureIndex, indexStatus, isIndexed } from "./codegraph/manage.js";
+import { RequestError, RequestStore, describeRequest } from "./governance/requests.js";
 
 // ---------------------------------------------------------------------------
 // Module state (one worker process)
@@ -497,6 +501,64 @@ async function handleToolCall(
   }
 }
 
+/**
+ * Apply an approved request: bind the repository if needed and grant the agent.
+ *
+ * Writes directly rather than going through the settings-page merge, because
+ * this is a single-agent, single-repository grant and the merge exists to serve
+ * a form. What it must not do is lose anything, so `policy` is carried over
+ * verbatim and only `projects`/`agents`/`defaultProjectKey` are touched.
+ */
+async function applyGrant(
+  ctx: PluginContext,
+  companyId: string,
+  request: { agentId: string; repository: string },
+): Promise<string> {
+  const { config: scoped, error } = await loadConfig(ctx, companyId);
+  if (error) throw new Error(error);
+
+  const root = await repositoryRoot(ctx, companyId);
+  const store = new GovernanceStore(ctx.state);
+  const current = await store.getCompany(companyId);
+
+  const projects: Record<string, { projectKey: string; path: string }> = {
+    ...((current?.projects ?? {}) as Record<string, { projectKey: string; path: string }>),
+  };
+
+  // An already-bound repository is granted as-is. Anything else is treated as a
+  // path and validated against the operator's folder before it is stored, so an
+  // agent-supplied string can never widen the boundary.
+  let projectKey = Object.keys(projects).find((key) => key === request.repository) ?? null;
+  if (!projectKey) {
+    const resolvedPath = resolveProjectPath(
+      bindingPathFor(request.repository, root),
+      { allowedProjectRoots: containmentRoots(scoped, root) },
+    );
+    projectKey = request.repository;
+    projects[projectKey] = { projectKey, path: resolvedPath };
+  }
+
+  await store.setCompany(companyId, {
+    ...(current ?? {}),
+    enabled: current?.enabled ?? true,
+    projects,
+    defaultProjectKey: current?.defaultProjectKey ?? projectKey,
+    agents: {
+      ...(current?.agents ?? {}),
+      [request.agentId]: {
+        projectKey,
+        policy: { allowedTools: [...CODEGRAPH_TOOLS] },
+      },
+    },
+    // Preserved verbatim: an approval must never clear a denial someone set.
+    ...(current?.policy
+      ? { policy: current.policy }
+      : { policy: { allowedTools: [...CODEGRAPH_TOOLS] } }),
+  });
+
+  return projectKey;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin definition
 // ---------------------------------------------------------------------------
@@ -535,6 +597,61 @@ const plugin = definePlugin({
     // registering lazily on an instance-wide flag would leave a company that
     // later enables the plugin with no handler at all. Gating at call time is
     // also what makes a config change take effect without a worker restart.
+    // The one tool that is NOT gated by CodeGraph governance. An agent denied
+    // CodeGraph is exactly the agent that needs to ask for it, so gating this
+    // would make the request flow unreachable. It is still subject to
+    // Paperclip's own profile, which is why the Activate step includes it.
+    if (!registeredTools.has(REQUEST_ACCESS_TOOL)) {
+      ctx.tools.register(
+        REQUEST_ACCESS_TOOL,
+        {
+          displayName: "Request CodeGraph access",
+          description:
+            "Ask a board member for CodeGraph access to a repository. Use this when CodeGraph tools are denied for you. Records a request for a human to approve.",
+          parametersSchema: {
+            type: "object",
+            properties: {
+              repository: { type: "string" },
+              reason: { type: "string" },
+            },
+            required: ["repository", "reason"],
+            additionalProperties: false,
+          },
+        },
+        async (params, runCtx): Promise<ToolResult> => {
+          const raw = (typeof params === "object" && params !== null ? params : {}) as Record<
+            string,
+            unknown
+          >;
+          try {
+            const requests = new RequestStore(ctx.state);
+            const created = await requests.create({
+              companyId: runCtx.companyId,
+              agentId: runCtx.agentId,
+              agentName: await resolveAgentName(ctx, runCtx.companyId, runCtx.agentId),
+              repository: String(raw["repository"] ?? ""),
+              reason: String(raw["reason"] ?? ""),
+              id: randomUUID(),
+              now: new Date().toISOString(),
+            });
+            // What the agent is told depends on whether it was denied before, so
+            // it learns the reason instead of asking again.
+            const previous = (await requests.list(runCtx.companyId)).find(
+              (entry) =>
+                entry.agentId === runCtx.agentId &&
+                entry.repository === created.repository &&
+                entry.status === "denied",
+            );
+            return { content: describeRequest(created, previous), data: { requestId: created.id } };
+          } catch (error) {
+            if (error instanceof RequestError) return { error: error.message };
+            throw error;
+          }
+        },
+      );
+      registeredTools.add(REQUEST_ACCESS_TOOL);
+    }
+
     for (const spec of CODEGRAPH_TOOL_SPECS) {
       if (registeredTools.has(spec.name)) continue;
       ctx.tools.register(
@@ -958,6 +1075,87 @@ const plugin = definePlugin({
       return { plan, curl: renderPlanAsCurl(plan) };
     });
 
+    /** Pending and decided access requests, for the sidebar. */
+    ctx.actions.register("list-access-requests", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) throw new Error("companyId is required");
+      const all = await new RequestStore(ctx.state).list(companyId);
+      return {
+        pending: all.filter((entry) => entry.status === "pending"),
+        decided: all.filter((entry) => entry.status !== "pending"),
+      };
+    });
+
+    /**
+     * Approve or deny a request.
+     *
+     * On approve the grant is applied first and the outcome recorded on the
+     * request: a decision that failed to apply must not look like a working
+     * approval, which is why `appliedAt`/`applyError` exist separately from
+     * `status`.
+     */
+    ctx.actions.register("decide-access-request", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      const requestId = asString(params?.["requestId"]);
+      const decision = asString(params?.["decision"]);
+      if (!companyId) throw new Error("companyId is required");
+      if (!requestId) throw new Error("requestId is required");
+      if (decision !== "approved" && decision !== "denied") {
+        throw new Error('decision must be "approved" or "denied"');
+      }
+
+      const requests = new RequestStore(ctx.state);
+      const now = new Date().toISOString();
+      const decided = await requests.decide({
+        companyId,
+        requestId,
+        decision,
+        decidedBy: asString(params?.["decidedBy"]) ?? "board",
+        decisionReason: asString(params?.["reason"]),
+        now,
+      });
+
+      if (decision === "denied") {
+        await audit(ctx, {
+          companyId,
+          agentId: decided.agentId,
+          runId: null,
+          paperclipProjectId: null,
+        }, "CodeGraph access request denied", {
+          requestId, decision, repository: decided.repository,
+        });
+        return { ok: true, request: decided };
+      }
+
+      let applied = decided;
+      try {
+        const projectKey = await applyGrant(ctx, companyId, decided);
+        applied = await requests.markApplied({ companyId, requestId, now });
+        await audit(ctx, {
+          companyId,
+          agentId: decided.agentId,
+          runId: null,
+          paperclipProjectId: null,
+        }, "CodeGraph access request approved", {
+          requestId, decision, projectKey,
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        applied = await requests.markApplied({ companyId, requestId, now, error: detail });
+        await audit(ctx, {
+          companyId,
+          agentId: decided.agentId,
+          runId: null,
+          paperclipProjectId: null,
+        }, "CodeGraph access request approved but not applied", {
+          requestId, decision, error: detail,
+        });
+        return { ok: false, request: applied, error: detail };
+      }
+
+      return { ok: true, request: applied };
+    });
+
     ctx.actions.register("shutdown-codegraph", async () => {
       const before = pool.size;
       await pool.closeAll();
@@ -1021,6 +1219,20 @@ export function extractServedFiles(text: string): string[] {
     }
   }
   return [...found].sort();
+}
+
+/** Best-effort agent display name; a missing name must not fail a request. */
+async function resolveAgentName(
+  ctx: PluginContext,
+  companyId: string,
+  agentId: string,
+): Promise<string | null> {
+  try {
+    const rows = await ctx.agents.list({ companyId, limit: 200, offset: 0 });
+    return rows.find((agent) => agent.id === agentId)?.name ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function asString(value: unknown): string | null {

@@ -46,6 +46,16 @@ const TOOL_SUFFIXES = [
 
 const READ_ONLY_TOOL_NAMES = TOOL_SUFFIXES.map((name) => `codegraph_${name}`);
 
+/**
+ * What goes into the Paperclip profile.
+ *
+ * `codegraph_request_access` is included deliberately: it is the one tool not
+ * gated by CodeGraph governance, so a denied agent can still ask for access. If
+ * it is missing from the profile, the request flow is unreachable and a denied
+ * agent has no way to become an allowed one.
+ */
+const PROFILE_TOOL_NAMES = [...READ_ONLY_TOOL_NAMES, "codegraph_request_access"];
+
 interface Readiness {
   enabled: boolean;
   codegraph: { ok: boolean; version: string | null; detail: string };
@@ -214,7 +224,7 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
             description: "Read-only CodeGraph tools. Every CodeGraph tool is query-only.",
             status: "active",
             defaultAction: "deny",
-            entries: READ_ONLY_TOOL_NAMES.map((toolName) => ({
+            entries: PROFILE_TOOL_NAMES.map((toolName) => ({
               selectorType: "tool_name",
               effect: "include",
               toolName: `${PLUGIN_ID}:${toolName}`,
