@@ -1,0 +1,27 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Research / toolchain scratch (never published)
+.research/
+.toolchain/
+.npm-cache/
+.scratch*/
+paperclip-e2e-fixtures/
+
+# Local evidence bundles may contain machine paths; keep them out of git by
+# default and publish sanitized copies under docs/evidence/ instead.
+.evidence-raw/
+
+# Secrets — never commit
+.env
+.env.*
+*.pem
+*.key
+!**/fixtures/**/*.key
+
+# Editor / OS
+.DS_Store
+*.swp
+.vscode/
+.idea/
