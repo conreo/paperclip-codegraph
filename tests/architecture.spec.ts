@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   MODULE_HEIGHT,
+  REFERENCE_EDGE_KINDS,
   assignLayers,
   buildRepoMap,
   chooseModuleDepth,
   findCycles,
+  findUnreferenced,
+  groupRoutes,
+  parseRoute,
   isGeneratedFile,
   isTestFile,
   layoutMap,
   moduleOf,
+  type DeadCandidate,
   type IndexedEdge,
   type IndexedFile,
   type MapLinkInput,
@@ -465,5 +472,166 @@ describe("buildRepoMap — turning an index into a map", () => {
     expect(map.modules).toEqual([]);
     expect(map.links).toEqual([]);
     expect(map.roots).toEqual([{ root: "", label: "whole repository", files: 0 }]);
+  });
+});
+
+describe("parseRoute", () => {
+  it("splits the method from the path", () => {
+    expect(parseRoute("GET /api/health")).toEqual({ method: "GET", path: "/api/health" });
+    expect(parseRoute("POST /api/v1/modules/alcohol/log")).toEqual({
+      method: "POST",
+      path: "/api/v1/modules/alcohol/log",
+    });
+  });
+
+  it("keeps a route with no method whole rather than guessing", () => {
+    // A dynamically registered route may genuinely have no verb the graph saw.
+    expect(parseRoute("/api/thing")).toEqual({ method: null, path: "/api/thing" });
+  });
+
+  it("tolerates extra spacing", () => {
+    expect(parseRoute("  GET   /a/b  ")).toEqual({ method: "GET", path: "/a/b" });
+  });
+
+  it("does not mistake a lowercase word for a method", () => {
+    expect(parseRoute("get /a")).toEqual({ method: null, path: "get /a" });
+  });
+});
+
+describe("groupRoutes", () => {
+  const routes = [
+    { id: "r2", method: "POST", path: "/b", filePath: "b.ts", line: 1, handler: "h", handlerFile: "b.ts", handlerLine: 2, handlerId: "fn:h" },
+    { id: "r1", method: "GET", path: "/a", filePath: "a.ts", line: 1, handler: null, handlerFile: null, handlerLine: null, handlerId: null },
+  ];
+
+  it("orders by path so the list can be scanned", () => {
+    expect(groupRoutes(routes).entries.map((r) => r.path)).toEqual(["/a", "/b"]);
+  });
+
+  it("counts routes with and without a handler", () => {
+    const grouped = groupRoutes(routes);
+    expect(grouped.withHandler).toBe(1);
+    expect(grouped.withoutHandler).toBe(1);
+  });
+
+  it("keys by method and path, since one path can serve several verbs", () => {
+    const grouped = groupRoutes([
+      ...routes,
+      { id: "r3", method: "DELETE", path: "/a", filePath: "a.ts", line: 9, handler: null, handlerFile: null, handlerLine: null, handlerId: null },
+    ]);
+    expect(grouped.byPath.has("GET /a")).toBe(true);
+    expect(grouped.byPath.has("DELETE /a")).toBe(true);
+  });
+});
+
+describe("findUnreferenced", () => {
+  const symbol = (id: string, filePath = "src/a.ts"): DeadCandidate => ({
+    id,
+    name: id,
+    qualifiedName: id,
+    kind: "function",
+    filePath,
+    startLine: 1,
+    endLine: 2,
+  });
+
+  const base = {
+    referenced: new Set<string>(),
+    entryPoints: new Set<string>(),
+    unreachableFiles: new Set<string>(),
+    limit: 100,
+  };
+
+  it("lists a symbol nothing reaches", () => {
+    const report = findUnreferenced([symbol("unused")], base);
+    expect(report.candidates.map((c) => c.id)).toEqual(["unused"]);
+  });
+
+  it("excludes a referenced symbol and counts why", () => {
+    const report = findUnreferenced([symbol("used")], {
+      ...base,
+      referenced: new Set(["used"]),
+    });
+    expect(report.candidates).toEqual([]);
+    expect(report.excluded.find((e) => e.reason === "referenced")?.count).toBe(1);
+  });
+
+  it("never reports an entry point as dead", () => {
+    // A route handler has no inbound call edge by design; calling it unused would
+    // be wrong every time.
+    const report = findUnreferenced([symbol("handler")], {
+      ...base,
+      entryPoints: new Set(["handler"]),
+    });
+    expect(report.candidates).toEqual([]);
+    expect(report.excluded.find((e) => e.reason === "entry point")?.count).toBe(1);
+  });
+
+  it("sets aside symbols in files nothing reaches", () => {
+    // "This whole file is unreachable" is a different fact from "this symbol is
+    // unused", and mixing them makes both harder to act on.
+    const report = findUnreferenced([symbol("x", "src/orphan.ts")], {
+      ...base,
+      unreachableFiles: new Set(["src/orphan.ts"]),
+    });
+    expect(report.candidates).toEqual([]);
+    expect(report.excluded.find((e) => e.reason === "in a file nothing reaches")?.count).toBe(1);
+  });
+
+  it("orders candidates by file then line, so a file's candidates sit together", () => {
+    const report = findUnreferenced(
+      [
+        { ...symbol("b"), filePath: "src/z.ts", startLine: 5 },
+        { ...symbol("a"), filePath: "src/a.ts", startLine: 9 },
+        { ...symbol("c"), filePath: "src/a.ts", startLine: 2 },
+      ],
+      base,
+    );
+    expect(report.candidates.map((c) => c.id)).toEqual(["c", "a", "b"]);
+  });
+
+  it("reports the true total while capping the list", () => {
+    const many = Array.from({ length: 300 }, (_, i) => symbol(`s${i}`));
+    const report = findUnreferenced(many, { ...base, limit: 50 });
+    expect(report.candidates).toHaveLength(50);
+    expect(report.totalCandidates).toBe(300);
+  });
+
+  it("always reports every exclusion reason, even at zero", () => {
+    // The counts are what make the list interpretable; a missing row would read as
+    // "nothing was excluded" rather than "nothing of that kind".
+    const report = findUnreferenced([symbol("x")], base);
+    expect(report.excluded.map((e) => e.reason).sort()).toEqual([
+      "entry point",
+      "in a file nothing reaches",
+      "referenced",
+    ]);
+  });
+});
+
+describe("REFERENCE_EDGE_KINDS — the rule that this view depends on", () => {
+  it("excludes `contains`, which is not a reference", () => {
+    // The bug this pins: `contains` is the file→symbol parent relation and the
+    // index has one for *every* symbol. Counting it as a reference made the
+    // referenced set equal to the symbol set, so the dead-code view could only
+    // ever return nothing — which is exactly what it did on the real POS index
+    // (2,352 symbols, 0 candidates) until this list existed.
+    expect(REFERENCE_EDGE_KINDS).not.toContain("contains");
+  });
+
+  it("includes the kinds that do mean a reference", () => {
+    for (const kind of ["calls", "imports", "references", "instantiates"]) {
+      expect(REFERENCE_EDGE_KINDS).toContain(kind);
+    }
+  });
+
+  it("is accompanied by a query that filters on it", () => {
+    // A constant nobody uses is a comment. The worker must actually filter.
+    const worker = readFileSync(
+      join(process.cwd(), "src", "worker.ts"),
+      "utf8",
+    );
+    expect(worker).toContain("REFERENCE_EDGE_KINDS");
+    expect(worker).toMatch(/kind IN \(\$\{placeholders\}\)/);
   });
 });

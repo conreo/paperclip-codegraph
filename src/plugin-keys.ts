@@ -36,6 +36,10 @@ export const DATA_KEYS = {
   graphReader: "graph-reader",
   /** The architecture map: modules, the references between them, and cycles. */
   graphMap: "graph-map",
+  /** The HTTP routes the index found, with their handlers. */
+  graphEntryPoints: "graph-entry-points",
+  /** Symbols nothing references, with the caveat and the exclusions. */
+  graphDeadCode: "graph-dead-code",
   /** A bounded source excerpt for one symbol. */
   graphSource: "graph-source",
   /** Symbol search in one of this org's repositories. */

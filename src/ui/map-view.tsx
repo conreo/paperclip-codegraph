@@ -22,7 +22,7 @@
  * repository: too coarse and everything is one box, too fine and it is a wall.
  */
 
-import { useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useMemo, useRef, useState, type CSSProperties } from "react";
 import { usePluginData } from "@paperclipai/plugin-sdk/ui";
 
 import {
@@ -66,6 +66,12 @@ export function MapView({
   const [depth, setDepth] = useState<number | null>(null);
   const [includeTests, setIncludeTests] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  // Zoom and pan are view state, not data: the boxes stay where the layout put
+  // them, so a reader can zoom out to see the shape and back in to read a label
+  // without the picture rearranging itself underneath them.
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
 
   const { data, loading, error } = usePluginData<MapResponse>(DATA_KEYS.graphMap, {
     companyId,
@@ -129,24 +135,100 @@ export function MapView({
           <div style={styles.canvasWrap}>
             <div style={styles.legend}>
               <strong style={styles.legendTitle}>Key</strong>
-              <LegendRow swatch="box" label="A module — one directory, with its files and symbols" />
+              <LegendRow swatch="box" label="A module — one directory, with the symbols and files in it" />
               <LegendRow
                 swatch="bar"
-                label="The bar is how much leans on it, against the most depended-on module here"
+                label="How much leans on it — files elsewhere that reference it, against the most depended-on box here. The count is on the box"
               />
-              <LegendRow swatch="line" label="Depends on — thicker means more references" />
-              <LegendRow swatch="dashed" label="Points back up — the lighter half of a cycle" />
-              <LegendRow swatch="badge" label="Tests, or tool-generated — nobody wrote it" />
+              <LegendRow swatch="line" label="Depends on — the box above calls, imports, extends or names a type from the box below. Thicker is more references" />
+              <LegendRow swatch="dashed" label="Points back up — the lighter half of a mutual dependency, or a link with no import behind it. Drawn dashed" />
+              <LegendRow swatch="layer" label="A module sits one layer above everything it depends on, so entry points end up at the top and the foundations at the bottom" />
+              <LegendRow swatch="selected" label="Selected — click a module to bring out its links; everything more than one hop away fades" />
+              <LegendRow swatch="empty" label="Nothing depends on this — a script, a workflow, an unreferenced corner" />
+              <LegendRow swatch="badge" label="Tests — more than half its files are tests, off unless you turn tests on" />
+              <LegendRow swatch="badge2" label="Generated — every file in it is tool-generated; nobody wrote it and nobody edits it" />
+              {hiddenWeak > 0 ? (
+                <LegendRow
+                  swatch="hidden"
+                  label={`${hiddenWeak} hidden — links carrying fewer than ${WEAK_LINK_THRESHOLD} references wait until you select a module they touch, so a weak coincidence never draws as a dependency`}
+                />
+              ) : null}
             </div>
 
             <div style={styles.canvas}>
+              <div style={styles.controls}>
+                <button
+                  type="button"
+                  style={styles.controlButton}
+                  onClick={() => setScale((value) => Math.min(4, Number((value * 1.25).toFixed(3))))}
+                  title="Zoom in"
+                  aria-label="Zoom in"
+                >
+                  +
+                </button>
+                <button
+                  type="button"
+                  style={styles.controlButton}
+                  onClick={() => setScale((value) => Math.max(0.2, Number((value / 1.25).toFixed(3))))}
+                  title="Zoom out"
+                  aria-label="Zoom out"
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  style={styles.controlButton}
+                  onClick={() => {
+                    setScale(1);
+                    setOffset({ x: 0, y: 0 });
+                  }}
+                  title="Reset zoom and position"
+                  aria-label="Reset zoom and position"
+                >
+                  ⟲
+                </button>
+                <span style={styles.zoomLabel}>{Math.round(scale * 100)}%</span>
+              </div>
+
               <svg
                 role="img"
                 aria-label={`Architecture map of ${organization ?? "this repository"}: ${layout.modules.length} modules`}
-                width={layout.width}
-                height={layout.height}
+                width={layout.width * scale}
+                height={layout.height * scale}
                 viewBox={`0 0 ${layout.width} ${layout.height}`}
-                style={styles.svg}
+                style={{
+                  ...styles.svg,
+                  transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+                  transformOrigin: "0 0",
+                  cursor: drag.current ? "grabbing" : "grab",
+                }}
+                onPointerDown={(event) => {
+                  // Only start a pan on the background: a click on a module is a
+                  // selection, not a drag.
+                  if (event.target !== event.currentTarget) return;
+                  drag.current = { x: event.clientX, y: event.clientY, ox: offset.x, oy: offset.y };
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={(event) => {
+                  const state = drag.current;
+                  if (!state) return;
+                  setOffset({
+                    x: state.ox + (event.clientX - state.x),
+                    y: state.oy + (event.clientY - state.y),
+                  });
+                }}
+                onPointerUp={(event) => {
+                  drag.current = null;
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                }}
+                onWheel={(event) => {
+                  // Ctrl/⌘-wheel zooms, as in every canvas tool; plain wheel is
+                  // left to the browser so the panel still scrolls normally.
+                  if (!event.ctrlKey && !event.metaKey) return;
+                  event.preventDefault();
+                  const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+                  setScale((value) => Math.min(4, Math.max(0.2, Number((value * factor).toFixed(3)))));
+                }}
               >
                 {layout.links.map((link) => {
                   const faded =
@@ -358,7 +440,9 @@ function ModuleBox({
   );
 }
 
-function LegendRow({ swatch, label }: { swatch: "box" | "bar" | "line" | "dashed" | "badge"; label: string }) {
+type Swatch = "box" | "bar" | "line" | "dashed" | "layer" | "selected" | "empty" | "badge" | "badge2" | "hidden";
+
+function LegendRow({ swatch, label }: { swatch: Swatch; label: string }) {
   return (
     <span style={styles.legendRow}>
       <svg width="22" height="12" aria-hidden style={{ flex: "0 0 auto" }}>
@@ -367,11 +451,26 @@ function LegendRow({ swatch, label }: { swatch: "box" | "bar" | "line" | "dashed
         ) : swatch === "bar" ? (
           <rect x="2" y="5" width="16" height="2.5" rx="1" fill={ui.primary} />
         ) : swatch === "line" ? (
-          <path d="M2 6 H20" stroke={ui.mutedForeground} strokeWidth="2" />
+          <path d="M2 6 H20" stroke={ui.mutedForeground} strokeWidth="2.5" />
         ) : swatch === "dashed" ? (
-          <path d="M2 6 H20" stroke={ui.mutedForeground} strokeWidth="2" strokeDasharray="4 3" />
+          <path d="M2 6 H20" stroke={ui.mutedForeground} strokeWidth="2.5" strokeDasharray="4 3" />
+        ) : swatch === "layer" ? (
+          <>
+            <rect x="2" y="1" width="18" height="4" rx="1" fill={ui.muted} stroke={ui.border} />
+            <rect x="2" y="7" width="18" height="4" rx="1" fill={ui.muted} stroke={ui.border} />
+          </>
+        ) : swatch === "selected" ? (
+          <rect x="2" y="2" width="18" height="8" rx="2" fill={ui.card} stroke={ui.primary} strokeWidth="2" />
+        ) : swatch === "empty" ? (
+          <>
+            <rect x="2" y="2" width="18" height="8" rx="2" fill={ui.card} stroke={ui.border} strokeDasharray="3 2" />
+          </>
+        ) : swatch === "badge" ? (
+          <rect x="4" y="3" width="14" height="6" rx="3" fill={ui.muted} stroke={ui.border} />
+        ) : swatch === "badge2" ? (
+          <rect x="4" y="3" width="14" height="6" rx="1" fill={ui.muted} stroke={ui.border} />
         ) : (
-          <rect x="4" y="2" width="14" height="8" rx="4" fill={ui.muted} stroke={ui.border} />
+          <path d="M2 6 H20" stroke={ui.mutedForeground} strokeWidth="1" strokeDasharray="1.5 3" />
         )}
       </svg>
       <span>{label}</span>
@@ -412,6 +511,36 @@ const styles: Record<string, CSSProperties> = {
   },
   legendTitle: { fontSize: 11, color: ui.foreground, marginRight: 4 },
   legendRow: { display: "inline-flex", alignItems: "center", gap: 5 },
+  controls: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "6px 8px",
+    borderBottom: `1px solid ${ui.border}`,
+    background: ui.card,
+    position: "sticky",
+    top: 0,
+    zIndex: 1,
+  },
+  controlButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    border: `1px solid ${ui.border}`,
+    background: ui.background,
+    color: "inherit",
+    cursor: "pointer",
+    fontSize: 14,
+    lineHeight: 1,
+    fontFamily: "inherit",
+  },
+  zoomLabel: {
+    marginLeft: 4,
+    fontSize: 11,
+    fontFamily: ui.fontMono,
+    color: ui.mutedForeground,
+  },
+  legendRowWrap: {},
   canvas: {
     border: `1px solid ${ui.border}`,
     borderRadius: 8,

@@ -1,6 +1,6 @@
 {
   "name": "paperclip-codegraph",
-  "version": "0.9.11",
+  "version": "0.10.0",
   "type": "module",
   "description": "CodeGraph code-intelligence MCP tools for Paperclip agents, with per-company, per-project and per-agent governance.",
   "scripts": {

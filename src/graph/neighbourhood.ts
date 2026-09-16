@@ -173,7 +173,19 @@ export function nodeById(projectPath: string, nodeId: string): GraphNode | null 
   }
 }
 
-/** Symbols matching a name or qualified name, best (shortest name) first. */
+/**
+ * Symbols and files matching a query, best (shortest name) first.
+ *
+ * Searches `file_path` as well as names, which is what makes typing a filename
+ * work: the index carries a `file` node per file, so "orderEngine.ts" resolves to
+ * the file rather than to nothing. CodeGraph's own search advertises "a symbol or
+ * a file", and a search that silently ignores half its own placeholder is a bug
+ * the operator has no way to diagnose.
+ *
+ * Name matches are ranked above path-only matches, because a query is far more
+ * often a symbol name than a directory. A file whose name *is* the query wins
+ * either way, since its name matches too.
+ */
 export function searchNodes(projectPath: string, query: string, limit = 25): GraphNode[] {
   // Wildcards are stripped so a query containing them is literal text, not a
   // pattern an operator did not mean to write. Stripping can empty the term —
@@ -188,12 +200,21 @@ export function searchNodes(projectPath: string, query: string, limit = 25): Gra
     const term = `%${needle}%`;
     const rows = db
       .prepare(
-        `SELECT ${NODE_COLUMNS.join(", ")} FROM nodes
-         WHERE name LIKE ? OR qualified_name LIKE ?
-         ORDER BY length(name) ASC, name ASC
-         LIMIT ?`,
+        `SELECT ${NODE_COLUMNS.join(", ")},
+                (name LIKE ? OR qualified_name LIKE ?) AS name_match
+           FROM nodes
+          WHERE name LIKE ? OR qualified_name LIKE ? OR file_path LIKE ?
+          ORDER BY name_match DESC, length(name) ASC, name ASC
+          LIMIT ?`,
       )
-      .all(term, term, Math.max(1, Math.min(limit, 100))) as Array<Record<string, unknown>>;
+      .all(
+        term,
+        term,
+        term,
+        term,
+        term,
+        Math.max(1, Math.min(limit, 100)),
+      ) as Array<Record<string, unknown>>;
     return rows.map(toNode);
   } finally {
     db.close();

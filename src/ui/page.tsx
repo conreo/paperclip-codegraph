@@ -34,6 +34,7 @@ import {
 } from "react";
 import {
   useHostLocation,
+  useHostNavigation,
   usePluginData,
   type PluginPageProps,
 } from "@paperclipai/plugin-sdk/ui";
@@ -42,6 +43,12 @@ import { DATA_KEYS } from "../plugin-keys.js";
 import { sanitizeErrorMessage } from "../errors.js";
 import { ui } from "./chrome.js";
 import { MapView } from "./map-view.js";
+import {
+  DeadCodeView,
+  EntryPointsView,
+  FlowView,
+  StepsView,
+} from "./views-panels.js";
 import { VIEW_LABELS, VIEW_NOTES, viewFromHash } from "./views.js";
 import { readerLayout, showsSidePanes } from "./reader-layout.js";
 
@@ -181,11 +188,24 @@ export function CodeGraphPage({ context }: PluginPageProps) {
   // The view lives in the URL, so the rail can link to it, a reload keeps it, and
   // the two cannot disagree about which is open.
   const { hash } = useHostLocation();
+  const navigation = useHostNavigation();
   const view = viewFromHash(hash);
   const layout = useReaderLayout();
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [selected, setSelected] = useState<SymbolRef | null>(null);
+
+  /**
+   * Open a symbol in the reader.
+   *
+   * Set from another view's row (a route's handler, a dead-code candidate), so it
+   * switches to the Symbol tab too — otherwise the selection would change behind
+   * a view that cannot show it.
+   */
+  const openInReader = useCallback((symbol: SymbolRef) => {
+    setSelected(symbol);
+    navigation.navigate("/codegraph#symbol");
+  }, [navigation]);
 
   // Open on the first indexed repository, so the page never greets an operator
   // with an error about a repository they did not choose.
@@ -272,14 +292,48 @@ export function CodeGraphPage({ context }: PluginPageProps) {
           )}
         </div>
 
-        <input
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search a symbol or a file…"
-          aria-label="Search a symbol or a file"
-          style={styles.search}
-        />
+        <div style={styles.searchWrap}>
+          <span aria-hidden style={styles.searchIcon}>
+            {/* Drawn inline: the page cannot import the host's icon set. */}
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+          </span>
+          <input
+            type="search"
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              // Escape clears, then blurs — the host's own search behaves this way.
+              if (event.key !== "Escape") return;
+              if (query.length > 0) {
+                event.preventDefault();
+                setQuery("");
+              } else {
+                event.currentTarget.blur();
+              }
+            }}
+            placeholder="Search a symbol or a file…"
+            aria-label="Search query"
+            style={styles.search}
+          />
+          {query.length > 0 ? (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => setQuery("")}
+              style={styles.searchClear}
+            >
+              ✕
+            </button>
+          ) : (
+            <kbd aria-hidden style={styles.searchKbd}>
+              /
+            </kbd>
+          )}
+        </div>
 
         <div style={styles.stats}>
           {active?.indexed
@@ -309,6 +363,42 @@ export function CodeGraphPage({ context }: PluginPageProps) {
 
       {view === "map" ? (
         <MapView companyId={companyId} projectId={projectId} organization={organization} />
+      ) : view === "entrypoints" ? (
+        <EntryPointsView
+          companyId={companyId}
+          projectId={projectId}
+          onOpen={(nodeId, name) =>
+            openInReader({
+              id: nodeId,
+              name,
+              qualifiedName: "",
+              kind: "",
+              filePath: "",
+              startLine: null,
+              endLine: null,
+            })
+          }
+        />
+      ) : view === "deadcode" ? (
+        <DeadCodeView
+          companyId={companyId}
+          projectId={projectId}
+          onOpen={(nodeId, name) =>
+            openInReader({
+              id: nodeId,
+              name,
+              qualifiedName: "",
+              kind: "",
+              filePath: "",
+              startLine: null,
+              endLine: null,
+            })
+          }
+        />
+      ) : view === "steps" ? (
+        <StepsView />
+      ) : view === "flow" ? (
+        <FlowView />
       ) : (
       <div style={showsSidePanes(layout.kind) ? styles.body : styles.bodyStacked}>
         <Pane

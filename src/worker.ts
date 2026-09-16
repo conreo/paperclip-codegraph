@@ -99,8 +99,14 @@ import {
   MAP_EDGE_QUERY,
   MAP_FILE_QUERY,
   buildRepoMap,
+  REFERENCE_EDGE_KINDS,
+  findUnreferenced,
+  groupRoutes,
+  parseRoute,
+  type DeadCandidate,
   type IndexedEdge,
   type IndexedFile,
+  type RouteEntry,
 } from "./graph/architecture.js";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -151,6 +157,11 @@ const MAX_READER_EDGES = 40;
 const MAX_MAP_EDGES = 200_000;
 const MAX_MAP_MODULES = 60;
 const MAX_MAP_DEPTH = 4;
+
+/** How many routes and dead-code candidates one response carries. */
+const MAX_ENTRY_POINTS = 200;
+const MAX_DEAD_SCAN = 20_000;
+const MAX_DEAD_CANDIDATES = 200;
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -1331,6 +1342,166 @@ const plugin = definePlugin({
         });
 
         return { ...map, requestedRoot: root ?? "" };
+      } catch (error) {
+        return graphFailure(error);
+      }
+    });
+
+    /**
+     * Entry points: the HTTP routes the index found, with their handlers.
+     *
+     * `route` is a first-class node kind — 173 of them on the POS repository — and
+     * a route's `calls` edge points at the function that serves it, so this is
+     * reported rather than guessed. CodeGraph's own entry-point view adds
+     * framework and CI detection on top; what is here is the part the index
+     * actually records.
+     */
+    ctx.data.register(DATA_KEYS.graphEntryPoints, async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) return { error: "companyId is required" };
+      try {
+        const projectPath = await repositoryForProject(companyId, asString(params?.["projectId"]));
+        const db = new DatabaseSync(path.join(projectPath, CODEGRAPH_INDEX_DIR, "codegraph.db"), {
+          readOnly: true,
+        });
+        let routes: RouteEntry[];
+        try {
+          const rows = db
+            .prepare(
+              `SELECT id, name, file_path, start_line FROM nodes
+                WHERE kind = 'route' AND file_path IS NOT NULL
+                ORDER BY file_path ASC, start_line ASC`,
+            )
+            .all() as Array<Record<string, unknown>>;
+
+          const handlerStmt = db.prepare(
+            `SELECT n2.id, n2.name, n2.file_path, n2.start_line
+               FROM edges e JOIN nodes n2 ON n2.id = e.target
+              WHERE e.source = ? AND e.kind = 'calls'
+              LIMIT 1`,
+          );
+
+          routes = rows.map((row) => {
+            const id = String(row["id"]);
+            const { method, path: routePath } = parseRoute(String(row["name"] ?? ""));
+            const handler = handlerStmt.all(id) as Array<Record<string, unknown>>;
+            const first = handler[0];
+            return {
+              id,
+              method,
+              path: routePath,
+              filePath: String(row["file_path"] ?? ""),
+              line: typeof row["start_line"] === "number" ? row["start_line"] : null,
+              handler: first ? String(first["name"] ?? "") : null,
+              handlerFile: first ? String(first["file_path"] ?? "") : null,
+              handlerLine:
+                first && typeof first["start_line"] === "number" ? first["start_line"] : null,
+              handlerId: first ? String(first["id"]) : null,
+            };
+          });
+        } finally {
+          db.close();
+        }
+
+        const grouped = groupRoutes(routes);
+        return {
+          routes: grouped.entries.slice(0, MAX_ENTRY_POINTS),
+          total: grouped.entries.length,
+          withHandler: grouped.withHandler,
+          withoutHandler: grouped.withoutHandler,
+          truncated: grouped.entries.length > MAX_ENTRY_POINTS,
+        };
+      } catch (error) {
+        return graphFailure(error);
+      }
+    });
+
+    /**
+     * Symbols nothing references.
+     *
+     * Weaker than the other views by nature, and the response says so rather than
+     * implying a verdict: the index records that a symbol is declared, not whether
+     * it is exported, so CodeGraph's own exclusions for exported symbols and
+     * mentioned-elsewhere names cannot be reproduced here. What is excluded, and
+     * why, is returned alongside the list.
+     */
+    ctx.data.register(DATA_KEYS.graphDeadCode, async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) return { error: "companyId is required" };
+      try {
+        const projectPath = await repositoryForProject(companyId, asString(params?.["projectId"]));
+        const db = new DatabaseSync(path.join(projectPath, CODEGRAPH_INDEX_DIR, "codegraph.db"), {
+          readOnly: true,
+        });
+        let symbols: DeadCandidate[];
+        let referenced: Set<string>;
+        let entryPoints: Set<string>;
+        let unreachableFiles: Set<string>;
+        try {
+          const symbolRows = db
+            .prepare(
+              `SELECT id, name, qualified_name, kind, file_path, start_line, end_line
+                 FROM nodes
+                WHERE kind IN ('function','method','class','component','interface','type_alias','constant')
+                  AND file_path IS NOT NULL AND file_path <> ''
+                LIMIT ?`,
+            )
+            .all(MAX_DEAD_SCAN) as Array<Record<string, unknown>>;
+
+          symbols = symbolRows.map((row) => ({
+            id: String(row["id"]),
+            name: String(row["name"] ?? ""),
+            qualifiedName: String(row["qualified_name"] ?? ""),
+            kind: String(row["kind"] ?? ""),
+            filePath: String(row["file_path"] ?? ""),
+            startLine: typeof row["start_line"] === "number" ? row["start_line"] : null,
+            endLine: typeof row["end_line"] === "number" ? row["end_line"] : null,
+          }));
+
+          // Only genuine reference kinds. `contains` is the file→symbol parent
+          // relation, present for every symbol, and counting it made this view
+          // incapable of finding anything.
+          const placeholders = REFERENCE_EDGE_KINDS.map(() => "?").join(", ");
+          referenced = new Set(
+            (db
+              .prepare(
+                `SELECT DISTINCT target FROM edges WHERE target IS NOT NULL AND kind IN (${placeholders})`,
+              )
+              .all(...REFERENCE_EDGE_KINDS) as Array<Record<string, unknown>>).map((row) =>
+              String(row["target"]),
+            ),
+          );
+          entryPoints = new Set(
+            (db.prepare("SELECT DISTINCT source FROM edges WHERE kind = 'calls' AND source LIKE 'route:%'").all() as Array<
+              Record<string, unknown>
+            >).map((row) => String(row["source"])),
+          );
+          // A file nothing reaches is a different fact from an unused symbol, and
+          // is reported separately rather than mixed into the list.
+          unreachableFiles = new Set(
+            (db.prepare("SELECT id FROM nodes WHERE kind = 'file' AND id NOT IN (SELECT DISTINCT target FROM edges)").all() as Array<
+              Record<string, unknown>
+            >).map((row) => String(row["id"]).replace(/^file:/, "")),
+          );
+        } finally {
+          db.close();
+        }
+
+        const report = findUnreferenced(symbols, {
+          referenced,
+          entryPoints,
+          unreachableFiles,
+          limit: MAX_DEAD_CANDIDATES,
+        });
+
+        return {
+          ...report,
+          scanned: symbols.length,
+          // Stated here as well as in the UI, so an API caller cannot read the
+          // list without the caveat.
+          caveat:
+            "Unreferenced is a hint, not a verdict: this plugin has no export analysis, so a symbol exported for another module to import can appear here.",
+        };
       } catch (error) {
         return graphFailure(error);
       }

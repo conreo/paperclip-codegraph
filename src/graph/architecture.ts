@@ -584,3 +584,151 @@ export const MAP_EDGE_QUERY = `
     LEFT JOIN nodes tn ON tn.id = e.target
    WHERE sn.file_path <> tn.file_path
    LIMIT ?`;
+
+// ---------------------------------------------------------------------------
+// Entry points
+// ---------------------------------------------------------------------------
+
+export interface RouteEntry {
+  id: string;
+  /** `GET`, `POST`, … when the index records one. */
+  method: string | null;
+  path: string;
+  filePath: string;
+  line: number | null;
+  /** The symbol the route calls, when the graph records one. */
+  handler: string | null;
+  handlerFile: string | null;
+  handlerLine: number | null;
+  handlerId: string | null;
+}
+
+/**
+ * Split a route node's name into its method and path.
+ *
+ * The index names a route `GET /api/health`; anything without a method prefix is
+ * kept whole rather than guessed at, because a route registered dynamically may
+ * genuinely have no verb the graph could see.
+ */
+export function parseRoute(name: string): { method: string | null; path: string } {
+  const match = /^([A-Z]{2,7})\s+(.+)$/.exec(name.trim());
+  if (!match) return { method: null, path: name.trim() };
+  return { method: match[1]!, path: match[2]!.trim() };
+}
+
+/** The route entries, ordered by path for scanning, with their handlers attached. */
+export function groupRoutes(routes: readonly RouteEntry[]): {
+  entries: RouteEntry[];
+  byPath: Map<string, RouteEntry>;
+  withHandler: number;
+  withoutHandler: number;
+} {
+  const entries = [...routes].sort((a, b) => a.path.localeCompare(b.path) || (a.method ?? "").localeCompare(b.method ?? ""));
+  return {
+    entries,
+    byPath: new Map(entries.map((entry) => [`${entry.method ?? ""} ${entry.path}`, entry])),
+    withHandler: entries.filter((entry) => entry.handler !== null).length,
+    withoutHandler: entries.filter((entry) => entry.handler === null).length,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Potentially unreferenced symbols
+// ---------------------------------------------------------------------------
+
+export interface DeadCandidate {
+  id: string;
+  name: string;
+  qualifiedName: string;
+  kind: string;
+  filePath: string;
+  startLine: number | null;
+  endLine: number | null;
+}
+
+export interface DeadCodeReport {
+  candidates: DeadCandidate[];
+  /** Symbols excluded, and why, so the number is never presented bare. */
+  excluded: Array<{ reason: string; count: number }>;
+  totalCandidates: number;
+}
+
+/**
+ * Symbols that no edge reaches.
+ *
+ * ## This view is weaker than the others, and says so
+ *
+ * "Nothing references this" is a **hint**, not a finding — CodeGraph's own dead
+ * code analysis excludes exported symbols, files nothing reaches, and names
+ * mentioned more than once, and on a real repository those exclusions are the
+ * majority of the candidates (215 exported, 209 unreachable-file, 63 mentioned).
+ * This plugin has no export analysis: the index records that a symbol is
+ * *declared*, not whether it is exported, so it cannot reproduce those rules.
+ *
+ * What it can do honestly is apply the two rules it *can* check and report both
+ * the survivors and the count it could not judge:
+ *
+ *   - a symbol with no inbound edge of any kind is a candidate;
+ *   - a symbol whose file nothing reaches is reported separately, because "this
+ *     whole file is unreachable" and "this symbol is unused" are different facts;
+ *   - entry points are never candidates — a route handler has no inbound call
+ *     edge by design, and reporting it as dead would be wrong every time.
+ */
+/**
+ * Edge kinds that mean "something refers to this".
+ *
+ * **`contains` is deliberately excluded.** It is not a reference: it is the
+ * file→symbol parent relation, and there is one for every symbol in the index. When
+ * it counted, every symbol appeared referenced and this view could only ever return
+ * nothing — which is exactly what happened on a real repository before this list
+ * existed, and is why it does now.
+ */
+export const REFERENCE_EDGE_KINDS = ["calls", "imports", "references", "instantiates"] as const;
+
+export function findUnreferenced(
+  symbols: readonly DeadCandidate[],
+  options: {
+    /** Ids that at least one reference edge arrives at. */
+    referenced: ReadonlySet<string>;
+    /** Ids of entry points, which are unreferenced by design. */
+    entryPoints: ReadonlySet<string>;
+    /** Files that have no inbound edge at all. */
+    unreachableFiles: ReadonlySet<string>;
+    limit: number;
+  },
+): DeadCodeReport {
+  const candidates: DeadCandidate[] = [];
+  let entryPointSkips = 0;
+  let unreachableFileSkips = 0;
+  let referencedSkips = 0;
+
+  for (const symbol of symbols) {
+    if (options.entryPoints.has(symbol.id)) {
+      entryPointSkips += 1;
+      continue;
+    }
+    if (options.referenced.has(symbol.id)) {
+      referencedSkips += 1;
+      continue;
+    }
+    if (options.unreachableFiles.has(symbol.filePath)) {
+      unreachableFileSkips += 1;
+      continue;
+    }
+    candidates.push(symbol);
+  }
+
+  candidates.sort(
+    (a, b) => a.filePath.localeCompare(b.filePath) || (a.startLine ?? 0) - (b.startLine ?? 0),
+  );
+
+  return {
+    candidates: candidates.slice(0, options.limit),
+    excluded: [
+      { reason: "referenced", count: referencedSkips },
+      { reason: "entry point", count: entryPointSkips },
+      { reason: "in a file nothing reaches", count: unreachableFileSkips },
+    ],
+    totalCandidates: candidates.length,
+  };
+}
