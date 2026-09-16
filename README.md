@@ -27,6 +27,7 @@ Company B ──┘                          └── repo B  (.codegraph index
   - [Governance profiles](#governance-profiles)
 - [Multi-org governance examples](#multi-org-governance-examples)
 - [Tools exposed](#tools-exposed)
+- [The CodeGraph page](#the-codegraph-page)
 - [Why `projectPath` is not exposed](#why-projectpath-is-not-exposed)
 - [Choosing between the two integration paths](#choosing-between-the-two-integration-paths)
 - [Verifying an install](#verifying-an-install)
@@ -342,6 +343,38 @@ unlisted. This plugin always sets `CODEGRAPH_MCP_TOOLS` explicitly to the
 governance-resolved set, for two reasons: leaving it unset would advertise one
 tool, and setting it means **CodeGraph itself refuses a tool this scope may not
 call**. Enforcement therefore does not rest on this plugin's code alone.
+
+## The CodeGraph page
+
+Agents get the eight tools. Humans get a page: **`/:companyPrefix/codegraph`**.
+
+It reads the same index the tools read and draws it, so there is no second server
+to run and no second copy of the code to keep in sync. That is a constraint, not
+a preference: plugin UI routes return JSON only, and CodeGraph's own viewer binds
+loopback, so the page cannot embed it. The worker reads the index and the page
+draws what comes back.
+
+What is on the page:
+
+| Control | Effect |
+|---|---|
+| **Repository** | Which of this org's projects to draw. Only repositories with an index are drawn; an unindexed one says so instead of showing an empty canvas. |
+| **Find a symbol** | Name search across the repository's index. Picking a result draws its graph. |
+| **Depth** | 1–3 hops. Deeper graphs are capped at 250 symbols, and the page says when it capped. |
+| **The graph** | Callers above, callees below. Click a node for its source; double-click to re-centre on it. |
+| **Source** | A bounded, line-numbered excerpt from the working tree, with the file and line range. |
+
+The layout is **layered, not force-directed**, and that is the whole design. A
+force layout scatters the same graph differently on every render and answers no
+question. Here the vertical axis is distance in the call graph, so a picture of
+the graph says something before you read a single label. Direction comes from the
+edge itself, so `calls` and `references` are both drawn without the plugin
+knowing which edge kinds exist.
+
+Nothing on the page accepts a path. The operator picks a *project*; the worker
+resolves that project's repository through the host, exactly as the tool path
+does, and the excerpt's file path comes from the index and is containment-checked
+before anything is read.
 
 ## Why `projectPath` is not exposed
 
