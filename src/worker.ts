@@ -36,10 +36,13 @@
  *    `allowedProjectRoots`) at call time, not just at write time.
  */
 
+import path from "node:path";
+
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 
 import {
+  CODEGRAPH_FOLDER_KEY,
   PLUGIN_ID,
   UPSTREAM_PROJECT_PATH_PARAM,
   MAX_ARG_STRING_CHARS,
@@ -116,6 +119,56 @@ function mcpEnv(config: RuntimeConfig): Record<string, string> {
     allowTelemetry: config.allowTelemetry,
     useDaemon: config.useDaemon,
   });
+}
+
+/**
+ * The operator-configured repositories directory, or null when unset.
+ *
+ * This is the folder the admin picks in Paperclip's own folder settings UI, so
+ * its path is host-validated (containment, symlink escape) rather than
+ * hand-written by whoever edits governance. Governance can then name a
+ * repository *relative* to it, which is the difference between "type the
+ * absolute path of the repo" and "pick your repositories directory once".
+ */
+async function repositoryRoot(
+  ctx: PluginContext,
+  companyId: string,
+): Promise<string | null> {
+  try {
+    const status = await ctx.localFolders.status(companyId, CODEGRAPH_FOLDER_KEY);
+    if (!status.configured) return null;
+    return status.realPath ?? status.path ?? null;
+  } catch (error) {
+    // A missing folder declaration must not break a deployment that configured
+    // absolute paths instead; fall back to those.
+    ctx.logger.warn("Could not read the configured repositories directory", {
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * Turn a governance binding path into an absolute one.
+ *
+ * Relative paths resolve against the operator's folder; absolute paths are
+ * taken as-is so an existing absolute-path deployment keeps working.
+ */
+function bindingPathFor(bindingPath: string, root: string | null): string {
+  if (path.isAbsolute(bindingPath) || !root) return bindingPath;
+  return path.join(root, bindingPath);
+}
+
+/**
+ * Containment roots for path validation.
+ *
+ * The operator's folder is the boundary when set, so `allowedProjectRoots`
+ * becomes optional in the common case. Explicit roots still win, because an
+ * operator who wrote them meant them.
+ */
+function containmentRoots(config: RuntimeConfig, root: string | null): string[] {
+  if (config.allowedProjectRoots.length > 0) return config.allowedProjectRoots;
+  return root ? [root] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -288,8 +341,9 @@ async function handleToolCall(
   const binding = resolved.project!;
   let projectPath: string;
   try {
-    projectPath = resolveProjectPath(binding.path, {
-      allowedProjectRoots: config.allowedProjectRoots,
+    const root = await repositoryRoot(ctx, runCtx.companyId);
+    projectPath = resolveProjectPath(bindingPathFor(binding.path, root), {
+      allowedProjectRoots: containmentRoots(config, root),
     });
   } catch (error) {
     const detail =
@@ -683,13 +737,23 @@ const plugin = definePlugin({
 
       // Paths are validated here as well as at call time so an operator gets an
       // immediate error instead of discovering it on an agent's first call.
-      const roots = (await loadConfig(ctx)).config.allowedProjectRoots;
+      const { config: scoped } = await loadConfig(ctx, companyId);
+      const root = await repositoryRoot(ctx, companyId);
+      const roots = containmentRoots(scoped, root);
       const normalized: CompanyGovernance = {
         ...validated,
         projects: Object.fromEntries(
           Object.entries(validated.projects ?? {}).map(([key, binding]) => [
             key,
-            { ...binding, path: resolveProjectPath(binding.path, { allowedProjectRoots: roots }) },
+            {
+              ...binding,
+              // A relative path is resolved against the operator's folder and
+              // stored absolute, so resolution at call time cannot be affected
+              // by a later change to that setting.
+              path: resolveProjectPath(bindingPathFor(binding.path, root), {
+                allowedProjectRoots: roots,
+              }),
+            },
           ]),
         ),
       };
@@ -732,8 +796,15 @@ const plugin = definePlugin({
         agentId: asString(params?.["agentId"]) ?? null,
         pluginEnabled: config.enabled,
       });
+      const root = await repositoryRoot(ctx, companyId);
       return {
         enabled: config.enabled,
+        // Whether the operator has picked a repositories directory, and whether
+        // the host considers it healthy. Never the path itself.
+        repositoriesDirectory: {
+          configured: root !== null,
+          alias: root ? path.basename(root) : null,
+        },
         allowed: resolved.allowed,
         reason: resolved.reason,
         // The alias and never the path: this output can reach an agent-adjacent

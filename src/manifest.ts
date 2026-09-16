@@ -13,7 +13,7 @@
  */
 
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { PLUGIN_ID, PLUGIN_VERSION } from "./constants.js";
+import { CODEGRAPH_FOLDER_KEY, PLUGIN_ID, PLUGIN_VERSION } from "./constants.js";
 import { INSTANCE_CONFIG_SCHEMA } from "./config.js";
 import { CODEGRAPH_TOOL_SPECS, toJsonSchema } from "./tools/catalog.js";
 
@@ -40,11 +40,26 @@ const manifest: PaperclipPluginManifestV1 = {
     // Plugin-attributed audit entries for governance decisions. Paperclip's own
     // gateway audit for each tool call is separate and always written.
     "activity.log.write",
+    // The operator picks the repository root in Paperclip's own folder settings
+    // UI. The host validates the path (containment, symlinks) and reports health,
+    // so the plugin never has to accept a hand-typed path from an agent.
+    "local.folders",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
   },
   instanceConfigSchema: INSTANCE_CONFIG_SCHEMA,
+  localFolders: [
+    {
+      folderKey: CODEGRAPH_FOLDER_KEY,
+      displayName: "Repositories directory",
+      description:
+        "Directory containing the repositories CodeGraph should index. Governance picks which repository inside it each company may read.",
+      // readWrite because `autoIndex` runs `codegraph init`, which writes
+      // `.codegraph/` into the repository. With autoIndex off it is only read.
+      access: "readWrite",
+    },
+  ],
   tools: CODEGRAPH_TOOL_SPECS.map((spec) => ({
     name: spec.name,
     displayName: spec.displayName,

@@ -33,9 +33,32 @@ describe("manifest", () => {
       "plugin.state.read",
       "plugin.state.write",
       "activity.log.write",
+      // The operator picks the repository root through the host's own folder
+      // settings UI, so the capability and the declaration must stay paired:
+      // declaring a folder without the capability is rejected by the host.
+      "local.folders",
     ]) {
       expect(manifest.capabilities).toContain(capability);
     }
+  });
+
+  it("declares the repositories folder the operator picks in the UI", () => {
+    expect(manifest.localFolders).toHaveLength(1);
+    const folder = manifest.localFolders![0]!;
+    expect(folder.folderKey).toBe("codegraph-repositories");
+    expect(folder.displayName.length).toBeGreaterThan(0);
+    expect(folder.description).toBeTruthy();
+    // readWrite, because autoIndex runs `codegraph init`, which writes
+    // `.codegraph/` into the repository.
+    expect(folder.access).toBe("readWrite");
+  });
+
+  it("does not require .codegraph to pre-exist", () => {
+    // Requiring it would make the folder invalid until somebody indexed it,
+    // which is exactly backwards: the folder is what gets indexed.
+    const folder = manifest.localFolders![0]!;
+    expect(folder.requiredDirectories ?? []).toHaveLength(0);
+    expect(folder.requiredFiles ?? []).toHaveLength(0);
   });
 
   it("exposes the worker entrypoint and nothing it does not ship", () => {

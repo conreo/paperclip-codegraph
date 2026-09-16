@@ -23,8 +23,19 @@ export const STATE_KEY = "profiles";
 /** Schema version of the persisted governance document. */
 export const GOVERNANCE_DOC_VERSION = 1;
 
+/**
+ * The operator-configured repository root, surfaced through Paperclip's native
+ * `localFolders` settings UI.
+ *
+ * Declaring this means the host renders the path field, validates it
+ * server-side (containment, `path_traversal`, `symlink_escape`) and shows
+ * health metrics — so selecting the folder to index is a form field rather
+ * than a hand-written governance path or a curl call.
+ */
+export const CODEGRAPH_FOLDER_KEY = "codegraph-repositories";
+
 /** Manifest version; keep in sync with package.json. */
-export const PLUGIN_VERSION = "0.2.0";
+export const PLUGIN_VERSION = "0.2.1";
 
 /**
  * `projectPath` is deliberately absent from every schema this plugin declares.
