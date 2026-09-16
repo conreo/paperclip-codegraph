@@ -47,6 +47,8 @@ import {
   PLUGIN_ID,
   UPSTREAM_PROJECT_PATH_PARAM,
   MAX_ARG_STRING_CHARS,
+  MAX_SOURCE_BYTES,
+  MAX_SOURCE_LINES,
 } from "./constants.js";
 import { normalizeConfig, type RuntimeConfig } from "./config.js";
 import { CodeGraphClientPool, buildChildEnv } from "./mcp/client.js";
@@ -82,8 +84,10 @@ import { mergeGovernance } from "./governance/merge.js";
 import {
   GraphUnavailable,
   neighbourhood,
+  nodeById,
   searchNodes,
 } from "./graph/neighbourhood.js";
+import { readExcerpt } from "./graph/source.js";
 import {
   acceptWorkspacePath,
   buildWorkspaceGovernance,
@@ -903,6 +907,58 @@ const plugin = definePlugin({
     });
 
     /**
+     * The repositories the graph view can draw, cheapest possible check.
+     *
+     * Distinct from `repositories` above, which runs `codegraph status` per
+     * indexed repository to report file and node counts. That is right for a
+     * status page and wrong for a selector: it spawns a process per project on
+     * every load. This one only asks whether the index file exists.
+     */
+    ctx.data.register("graph-projects", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) return { repositories: [] };
+
+      const { config: scoped, error } = await loadConfig(ctx, companyId);
+      if (error) return { repositories: [], error };
+      const roots = containmentRoots(scoped, await repositoryRoot(ctx, companyId));
+
+      const repositories: Array<Record<string, unknown>> = [];
+      let projects: Array<{ id: string; name?: string }> = [];
+      try {
+        projects = await ctx.projects.list({ companyId, limit: 200, offset: 0 });
+      } catch {
+        return { repositories: [], detail: "This org has no readable projects." };
+      }
+
+      for (const project of projects) {
+        try {
+          const workspace = await ctx.projects.getPrimaryWorkspace(project.id, companyId);
+          const resolved = acceptWorkspacePath(workspace?.path, roots);
+          if (!resolved) continue;
+          repositories.push({
+            projectId: project.id,
+            name: project.name ?? path.basename(resolved),
+            // Alias only — this feeds the browser and must not disclose host layout.
+            alias: path.basename(resolved),
+            indexed: await isIndexed(resolved),
+          });
+        } catch {
+          // A project with no usable workspace is simply not offered.
+        }
+      }
+
+      return {
+        repositories,
+        enabled: scoped.enabled,
+        // Indexed first, so the obvious choice is at the top of the selector.
+        detail:
+          repositories.length === 0
+            ? "This org has no projects with a readable repository workspace."
+            : undefined,
+      };
+    });
+
+    /**
      * Resolve the repository a graph request is about.
      *
      * The operator picks a project; the path comes from that project's own
@@ -961,7 +1017,51 @@ const plugin = definePlugin({
           companyId,
           asString(params?.["projectId"]),
         );
-        return { graph: neighbourhood(projectPath, nodeId, depth) };
+        // The seed is echoed back so the view can mark the centre of the graph
+        // without re-deriving it from the traversal order.
+        return { graph: neighbourhood(projectPath, nodeId, depth), seedId: nodeId, depth };
+      } catch (error) {
+        return graphFailure(error);
+      }
+    });
+
+    /**
+     * A short source excerpt for one node, so the graph view can show the code
+     * behind a symbol without the operator leaving Paperclip.
+     *
+     * The path comes from the node's row in the index and is validated against
+     * containment before anything is read; only a capped excerpt is returned,
+     * and it is line-numbered so the excerpt is self-describing.
+     */
+    ctx.data.register("graph-source", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      const nodeId = asString(params?.["nodeId"]);
+      if (!companyId || !nodeId) return { excerpt: null };
+      try {
+        const projectPath = await repositoryForProject(companyId, asString(params?.["projectId"]));
+        const { config: scoped } = await loadConfig(ctx, companyId);
+        const roots = containmentRoots(scoped, await repositoryRoot(ctx, companyId));
+
+        const node = nodeById(projectPath, nodeId);
+        if (!node) return { excerpt: null, reason: "That symbol is not in the current index." };
+
+        const absolute = resolveProjectPath(path.join(projectPath, node.filePath), {
+          allowedProjectRoots: roots.length > 0 ? roots : [projectPath],
+        });
+
+        const excerpt = await readExcerpt(absolute, node.startLine, node.endLine, {
+          maxLines: MAX_SOURCE_LINES,
+          maxBytes: MAX_SOURCE_BYTES,
+        });
+
+        return {
+          excerpt: excerpt.text,
+          filePath: node.filePath,
+          startLine: excerpt.firstLine,
+          endLine: excerpt.lastLine,
+          truncated: excerpt.truncated,
+          node,
+        };
       } catch (error) {
         return graphFailure(error);
       }

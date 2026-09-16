@@ -35,7 +35,7 @@ export const GOVERNANCE_DOC_VERSION = 1;
 export const CODEGRAPH_FOLDER_KEY = "codegraph-repositories";
 
 /** Manifest version; keep in sync with package.json. */
-export const PLUGIN_VERSION = "0.8.0";
+export const PLUGIN_VERSION = "0.9.0";
 
 /**
  * `projectPath` is deliberately absent from every schema this plugin declares.
@@ -83,6 +83,16 @@ export const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 export const MAX_RESULT_CHARS = 400_000;
 export const MAX_ARG_STRING_CHARS = 4_000;
 export const MAX_ARRAY_ITEMS = 200;
+
+/**
+ * Caps for the source excerpt the graph view shows for one symbol.
+ *
+ * Both are bounded because the excerpt crosses the plugin bridge to the
+ * browser: a symbol near the top of a very large file must not pull the whole
+ * file into a page render.
+ */
+export const MAX_SOURCE_LINES = 60;
+export const MAX_SOURCE_BYTES = 256_000;
 
 /**
  * Risk classification reported to Paperclip.

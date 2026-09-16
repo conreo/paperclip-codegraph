@@ -598,3 +598,14 @@ export function CodeGraphSidebar({ context }: PluginSidebarProps) {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Page entry — the graph itself
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-exported rather than reimplemented: the page lives in its own module so the
+ * layout algebra it depends on stays unit-testable and this file stays the
+ * bundle's contract surface.
+ */
+export { CodeGraphPage } from "./page.js";

@@ -144,6 +144,26 @@ function toNode(row: Record<string, unknown>): GraphNode {
   };
 }
 
+/**
+ * One symbol by its index id, or null when the index has no such id.
+ *
+ * Separate from `searchNodes` on purpose: an id lookup is exact, so it must not
+ * be expressed as a name search that happens to include the id as text.
+ */
+export function nodeById(projectPath: string, nodeId: string): GraphNode | null {
+  const db = openIndex(projectPath);
+  try {
+    assertSchema(db);
+    const rows = db
+      .prepare(`SELECT ${NODE_COLUMNS.join(", ")} FROM nodes WHERE id = ?`)
+      .all(nodeId) as Array<Record<string, unknown>>;
+    const row = rows[0];
+    return row ? toNode(row) : null;
+  } finally {
+    db.close();
+  }
+}
+
 /** Symbols matching a name or qualified name, best (shortest name) first. */
 export function searchNodes(projectPath: string, query: string, limit = 25): GraphNode[] {
   // Wildcards are stripped so a query containing them is literal text, not a

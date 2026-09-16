@@ -7,6 +7,67 @@ import {
   renderPlanAsCurl,
 } from "../src/governance/provision.js";
 
+describe("manifest — UI slots", () => {
+  /**
+   * The host validates slot type against capability and rejects the manifest
+   * without the matching declaration, so this pairing is a real contract rather
+   * than documentation.
+   */
+  const REQUIRED_CAPABILITY: Record<string, string> = {
+    settingsPage: "instance.settings.register",
+    sidebar: "ui.sidebar.register",
+    page: "ui.page.register",
+  };
+
+  it("declares the capability each slot requires", () => {
+    const slots = manifest.ui?.slots ?? [];
+    expect(slots.length).toBeGreaterThan(0);
+
+    for (const slot of slots) {
+      const required = REQUIRED_CAPABILITY[slot.type];
+      expect(required, `no capability mapping for slot type "${slot.type}"`).toBeDefined();
+      expect(
+        manifest.capabilities,
+        `slot "${slot.id}" (${slot.type}) requires ${required}`,
+      ).toContain(required);
+    }
+  });
+
+  it("gives every slot a unique id and a named export", () => {
+    const slots = manifest.ui?.slots ?? [];
+    const ids = slots.map((slot) => slot.id);
+    expect(new Set(ids).size).toBe(ids.length);
+
+    for (const slot of slots) {
+      expect(slot.displayName.length).toBeGreaterThan(0);
+      expect(slot.exportName.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("routes the graph page somewhere the host has not reserved", () => {
+    // `routePath` is only valid on page / routeSidebar / companySettingsPage;
+    // on any other slot the host ignores or rejects it.
+    const routed = (manifest.ui?.slots ?? []).filter(
+      (slot) => "routePath" in slot && slot.routePath,
+    );
+    for (const slot of routed) {
+      expect(["page", "routeSidebar", "companySettingsPage"]).toContain(slot.type);
+      // Reserved segments map to first-class host pages and would collide.
+      expect([
+        "dashboard", "onboarding", "companies", "company", "settings", "plugins",
+        "org", "agents", "projects", "issues", "goals", "approvals", "costs",
+        "activity", "inbox", "workspaces", "design-guide", "tests",
+      ]).not.toContain(slot.routePath);
+    }
+  });
+
+  it("exposes the graph page the UI bundle actually exports", () => {
+    const page = (manifest.ui?.slots ?? []).find((slot) => slot.type === "page");
+    expect(page).toBeDefined();
+    expect(page!.exportName).toBe("CodeGraphPage");
+  });
+});
+
 describe("manifest", () => {
   it("uses a schema-valid plugin id", () => {
     expect(manifest.id).toMatch(/^[a-z0-9][a-z0-9._-]*$/);
@@ -63,7 +124,6 @@ describe("manifest", () => {
     const names = manifest.tools?.map((tool) => tool.name) ?? [];
     expect(names).toEqual([...CODEGRAPH_TOOLS]);
   });
-
   it("gives every tool a display name, description and object schema", () => {
     for (const tool of manifest.tools ?? []) {
       expect(tool.displayName.length).toBeGreaterThan(0);
