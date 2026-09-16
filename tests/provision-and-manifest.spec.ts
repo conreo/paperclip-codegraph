@@ -35,51 +35,20 @@ describe("manifest", () => {
       "plugin.state.read",
       "plugin.state.write",
       "activity.log.write",
-      // The operator picks the repository root through the host's own folder
-      // settings UI, so the capability and the declaration must stay paired:
-      // declaring a folder without the capability is rejected by the host.
-      "local.folders",
       "instance.settings.register",
     ]) {
       expect(manifest.capabilities).toContain(capability);
     }
   });
 
-  it("declares the repositories folder the operator picks in the UI", () => {
-    expect(manifest.localFolders).toHaveLength(1);
-    const folder = manifest.localFolders![0]!;
-    expect(folder.folderKey).toBe("codegraph-repositories");
-    expect(folder.displayName.length).toBeGreaterThan(0);
-    expect(folder.description).toBeTruthy();
-    // readWrite, because autoIndex runs `codegraph init`, which writes
-    // `.codegraph/` into the repository.
-    expect(folder.access).toBe("readWrite");
-  });
-
-  it("does not require .codegraph to pre-exist", () => {
-    // Requiring it would make the folder invalid until somebody indexed it,
-    // which is exactly backwards: the folder is what gets indexed.
-    const folder = manifest.localFolders![0]!;
-    expect(folder.requiredDirectories ?? []).toHaveLength(0);
-    expect(folder.requiredFiles ?? []).toHaveLength(0);
-  });
-
-  it("exposes the worker and UI entrypoints it actually ships", () => {
-    expect(manifest.entrypoints.worker).toBe("./dist/worker.js");
-    // Declaring a ui entrypoint without building it is an install-time failure,
-    // so the two must stay paired.
-    expect(manifest.entrypoints.ui).toBe("./dist/ui");
-    // A settingsPage slot requires this exact capability; the host rejects the
-    // manifest as inconsistent without it.
-    expect(manifest.capabilities).toContain("instance.settings.register");
-  });
-
-  it("declares a settings page that the ui bundle exports", () => {
-    const slots = manifest.ui?.slots ?? [];
-    const settings = slots.find((slot) => slot.type === "settingsPage");
-    expect(settings).toBeDefined();
-    // exportName must match the named export in src/ui/index.tsx.
-    expect(settings?.exportName).toBe("SettingsPage");
+  it("declares no local folders, so Paperclip renders no folder panel", () => {
+    // A declared folder is rendered by the host with a health badge, and an
+    // unconfigured one reads as "Needs attention" even when the deployment does
+    // not need it — repositories come from the run's project workspace, or from
+    // absolute bindings. A standing false alarm is worse than no picker, so the
+    // declaration is gone and the capability with it.
+    expect(manifest.localFolders ?? []).toHaveLength(0);
+    expect(manifest.capabilities).not.toContain("local.folders");
   });
 
   it("declares the eight CodeGraph tools plus the access-request tool", () => {
