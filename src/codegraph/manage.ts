@@ -342,6 +342,46 @@ export async function ensureIndex(options: {
   };
 }
 
+export interface RebuildResult {
+  ok: boolean;
+  detail: string;
+  stdout: string;
+}
+
+/**
+ * Full re-index: `codegraph index <path>`.
+ *
+ * Upstream's `index` is a *rebuild from scratch* — it recreates the database
+ * rather than syncing — which is why this is a separate, explicitly-requested
+ * operation and not something a query path ever triggers. An operator presses a
+ * button; an agent does not.
+ */
+export async function rebuildIndex(options: {
+  projectPath: string;
+  command: string;
+  timeoutMs: number;
+  env: Record<string, string>;
+}): Promise<RebuildResult> {
+  const result = await runCommand(options.command, ["index", options.projectPath], {
+    timeoutMs: options.timeoutMs,
+    cwd: options.projectPath,
+    env: options.env,
+  });
+  const indexed = await isIndexed(options.projectPath);
+  return {
+    ok: result.code === 0 && indexed,
+    detail:
+      result.code === 0
+        ? indexed
+          ? "Rebuilt the CodeGraph index"
+          : "codegraph index exited 0 but no index appeared"
+        : result.timedOut
+          ? `codegraph index timed out after ${options.timeoutMs}ms`
+          : `codegraph index failed (exit ${result.code}): ${result.stderr.slice(-500)}`,
+    stdout: result.stdout.slice(-2_000),
+  };
+}
+
 /** `codegraph status <path> --json`, parsed when possible. */
 export async function indexStatus(options: {
   projectPath: string;

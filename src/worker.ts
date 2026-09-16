@@ -73,7 +73,13 @@ import {
   redactPath,
 } from "./governance/sanitize.js";
 import { buildNativeMcpPlan, renderPlanAsCurl } from "./governance/provision.js";
-import { ensureBinary, ensureIndex, indexStatus, isIndexed } from "./codegraph/manage.js";
+import {
+  ensureBinary,
+  ensureIndex,
+  indexStatus,
+  isIndexed,
+  rebuildIndex,
+} from "./codegraph/manage.js";
 import { RequestError, RequestStore, describeRequest } from "./governance/requests.js";
 
 // ---------------------------------------------------------------------------
@@ -782,6 +788,80 @@ const plugin = definePlugin({
       };
     });
 
+    /**
+     * Index state for every repository this company has bound.
+     *
+     * Read-only, and the alias rather than the path: this feeds a UI, so it must
+     * not disclose the host's layout.
+     */
+    ctx.data.register("index-status", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) return { repositories: [], codegraph: null };
+
+      const { config: scoped, error } = await loadConfig(ctx, companyId);
+      if (error) return { repositories: [], codegraph: null, error };
+
+      const env = mcpEnv(scoped);
+      const binary = await ensureBinary({
+        command: scoped.codegraphCommand,
+        autoInstall: false,
+        version: scoped.codegraphVersion,
+        timeoutMs: 15_000,
+        env,
+      });
+
+      const root = await repositoryRoot(ctx, companyId);
+      const document = await new GovernanceStore(ctx.state).loadForResolve(companyId);
+      const resolved = resolveScope(document, { companyId, pluginEnabled: scoped.enabled });
+
+      // Deliberately NOT gated on the scope resolving. This is an operator-facing
+      // diagnostic: when the plugin is disabled or a scope is denied, "which
+      // repositories are bound and are they indexed?" is exactly the question
+      // being asked. Returning an empty list there would read as "nothing is
+      // bound" and send the operator looking in the wrong place, so the bindings
+      // are listed regardless and the denial is reported alongside.
+      const bound = Object.values(document.companies[companyId]?.projects ?? {});
+
+      const repositories: Array<Record<string, unknown>> = [];
+      for (const binding of bound) {
+        const entry: Record<string, unknown> = { projectKey: binding.projectKey };
+        try {
+          const bound = resolveProjectPath(bindingPathFor(binding.path, root), {
+            allowedProjectRoots: containmentRoots(scoped, root),
+          });
+          entry["alias"] = path.basename(bound);
+          entry["indexed"] = await isIndexed(bound);
+          if (entry["indexed"] && binary.ok) {
+            const status = await indexStatus({
+              projectPath: bound,
+              command: binary.resolvedPath ?? scoped.codegraphCommand,
+              timeoutMs: 20_000,
+              env,
+            });
+            const parsed = (status.parsed ?? {}) as Record<string, unknown>;
+            entry["fileCount"] = parsed["fileCount"] ?? null;
+            entry["nodeCount"] = parsed["nodeCount"] ?? null;
+            entry["lastIndexed"] = parsed["lastIndexed"] ?? null;
+          }
+        } catch (pathError) {
+          entry["indexed"] = false;
+          entry["problem"] =
+            pathError instanceof Error ? pathError.message : String(pathError);
+        }
+        repositories.push(entry);
+      }
+
+      return {
+        codegraph: { ok: binary.ok, version: binary.version, detail: binary.detail },
+        // So a UI can say "3 repositories, but CodeGraph is switched off" rather
+        // than showing an unexplained empty screen.
+        enabled: scoped.enabled,
+        allowed: resolved.allowed,
+        reason: resolved.reason,
+        repositories,
+      };
+    });
+
     /** The company's agents, with names, so the settings page can list them. */
     ctx.data.register("agents", async (params) => {
       const companyId = asString(params?.["companyId"]);
@@ -1154,6 +1234,84 @@ const plugin = definePlugin({
       }
 
       return { ok: true, request: applied };
+    });
+
+    /**
+     * Index a repository on request.
+     *
+     * Indexing mutates the checkout (it writes `.codegraph/`) and is CPU- and
+     * disk-intensive, so it is an explicit operator action rather than something
+     * `autoIndex` does quietly — and never something an agent can trigger.
+     * `reindex: true` is a full rebuild, which upstream implements by recreating
+     * the database.
+     */
+    ctx.actions.register("index-now", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) throw new Error("companyId is required");
+      const reindex = params?.["reindex"] === true;
+
+      const { config: scoped, error } = await loadConfig(ctx, companyId);
+      if (error) throw new Error(error);
+
+      const root = await repositoryRoot(ctx, companyId);
+      const document = await new GovernanceStore(ctx.state).loadForResolve(companyId);
+      const wanted = asString(params?.["projectKey"]);
+      const company = document.companies[companyId];
+      const available = Object.keys(company?.projects ?? {});
+      const projectKey =
+        wanted && available.includes(wanted) ? wanted : (company?.defaultProjectKey ?? available[0]);
+      if (!projectKey) {
+        throw new Error(
+          "No repository is bound for this company. Add one before indexing.",
+        );
+      }
+      const binding = company?.projects?.[projectKey];
+      if (!binding) throw new Error(`No binding for "${projectKey}"`);
+
+      const env = mcpEnv(scoped);
+      const binary = await ensureBinary({
+        command: scoped.codegraphCommand,
+        autoInstall: scoped.autoInstall,
+        version: scoped.codegraphVersion,
+        timeoutMs: Math.max(scoped.startupTimeoutMs, 300_000),
+        env,
+      });
+      if (!binary.ok || !binary.resolvedPath) throw new Error(binary.detail);
+
+      const projectPath = resolveProjectPath(bindingPathFor(binding.path, root), {
+        allowedProjectRoots: containmentRoots(scoped, root),
+      });
+
+      const result = reindex
+        ? await rebuildIndex({
+            projectPath,
+            command: binary.resolvedPath,
+            timeoutMs: scoped.indexTimeoutMs,
+            env,
+          })
+        : await ensureIndex({
+            projectPath,
+            // An explicit request, so index even though autoIndex may be off.
+            autoIndex: true,
+            command: binary.resolvedPath,
+            timeoutMs: scoped.indexTimeoutMs,
+            env,
+          });
+
+      await audit(
+        ctx,
+        { companyId, agentId: null, runId: null, paperclipProjectId: null },
+        `CodeGraph index ${result.ok ? "completed" : "failed"} for "${projectKey}"`,
+        { projectKey, reindex, ok: result.ok, detail: result.detail.slice(0, 300) },
+      );
+
+      return {
+        ok: result.ok,
+        projectKey,
+        alias: path.basename(projectPath),
+        reindex,
+        detail: result.detail,
+      };
     });
 
     ctx.actions.register("shutdown-codegraph", async () => {
