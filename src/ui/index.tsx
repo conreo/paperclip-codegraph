@@ -38,6 +38,7 @@ import {
   type ActivationSummary,
   type StepOutcome,
 } from "../activation.js";
+import { sanitizeErrorMessage } from "../errors.js";
 
 
 /** Must match the manifest id; the host namespaces tools with it. */
@@ -246,7 +247,10 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
     } catch (error) {
       setMessage({
         kind: "error",
-        text: error instanceof Error ? error.message : String(error),
+        // Sanitised at the display boundary only: the classification above needs
+        // the raw text, but a board member must never be shown raw SQL and its
+        // bound parameters.
+        text: sanitizeErrorMessage(error),
       });
     } finally {
       setBusy(null);
