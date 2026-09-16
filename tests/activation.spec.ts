@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeActivation,
+  findProfileId,
   isAlreadyExistsMessage,
   type ActivationSummary,
 } from "../src/activation.js";
@@ -62,5 +63,46 @@ describe("describeActivation", () => {
       summary({ profile: "created", binding: "already-existed", gateway: "already-existed" }),
     );
     expect(text).not.toMatch(/already activated/);
+  });
+});
+
+describe("findProfileId", () => {
+  it("reads the shape the API actually returns — { profiles: [...] }", () => {
+    // routes/tool-access.ts: res.json({ profiles: await svc.listProfiles(companyId) })
+    const response = {
+      profiles: [
+        { id: "other-id", profileKey: "something-else" },
+        { id: "cde655fc-e744-4caa-ab24-29edb7ba1372", profileKey: "codegraph-read" },
+      ],
+    };
+    expect(findProfileId(response, "codegraph-read")).toBe(
+      "cde655fc-e744-4caa-ab24-29edb7ba1372",
+    );
+  });
+
+  it("also accepts a bare array", () => {
+    expect(findProfileId([{ id: "p1", profileKey: "codegraph-read" }], "codegraph-read")).toBe("p1");
+  });
+
+  it("returns null when the profile is absent", () => {
+    expect(findProfileId({ profiles: [{ id: "p1", profileKey: "other" }] }, "codegraph-read")).toBeNull();
+    expect(findProfileId({ profiles: [] }, "codegraph-read")).toBeNull();
+  });
+
+  it("returns null rather than throwing on anything unexpected", () => {
+    for (const bad of [null, undefined, 42, "nope", {}, { profiles: "nope" }, { profiles: [null, 7] }]) {
+      expect(findProfileId(bad, "codegraph-read"), JSON.stringify(bad)).toBeNull();
+    }
+  });
+
+  it("ignores a row with a matching key but no usable id", () => {
+    expect(findProfileId({ profiles: [{ profileKey: "codegraph-read" }] }, "codegraph-read")).toBeNull();
+    expect(findProfileId({ profiles: [{ id: 7, profileKey: "codegraph-read" }] }, "codegraph-read")).toBeNull();
+  });
+
+  it("does not match a merely similar key", () => {
+    expect(
+      findProfileId({ profiles: [{ id: "p1", profileKey: "codegraph-read-only" }] }, "codegraph-read"),
+    ).toBeNull();
   });
 });

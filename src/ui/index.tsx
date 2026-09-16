@@ -32,6 +32,7 @@ import {
   GATEWAY_SLUG,
   PROFILE_KEY,
   describeActivation,
+  findProfileId,
   isAlreadyExistsMessage,
   type ActivationSummary,
   type StepOutcome,
@@ -172,16 +173,14 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (!isAlreadyExistsMessage(message)) throw error;
-        const listed = await coreApi<Array<{ id: string; profileKey: string }>>(profilesPath);
-        const existing = (Array.isArray(listed) ? listed : []).find(
-          (profile) => profile.profileKey === PROFILE_KEY,
-        );
-        if (!existing) {
+        const listed = await coreApi<unknown>(profilesPath);
+        const existingId = findProfileId(listed, PROFILE_KEY);
+        if (!existingId) {
           throw new Error(
             `A tool access record named "${PROFILE_KEY}" already exists but could not be found to reuse: ${message}`,
           );
         }
-        profileId = existing.id;
+        profileId = existingId;
         profileOutcome = "already-existed";
       }
 

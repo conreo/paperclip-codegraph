@@ -30,6 +30,34 @@ export function isAlreadyExistsMessage(message: string): boolean {
   return /already exists|duplicate key|unique constraint|conflict/i.test(message);
 }
 
+/**
+ * Find the profile this plugin owns in a list response.
+ *
+ * `GET /api/companies/:companyId/tools/profiles` answers
+ * `{ profiles: [...] }` — not a bare array (routes/tool-access.ts). The first
+ * version of the idempotency fix assumed an array, so the lookup silently found
+ * nothing and reported "already exists but could not be found to reuse".
+ *
+ * Both shapes are accepted because guessing one was the bug, but the wrapped form
+ * is the one the API actually returns.
+ */
+export function findProfileId(response: unknown, profileKey: string): string | null {
+  const rows = Array.isArray(response)
+    ? response
+    : typeof response === "object" && response !== null && Array.isArray((response as { profiles?: unknown }).profiles)
+      ? ((response as { profiles: unknown[] }).profiles)
+      : [];
+
+  for (const row of rows) {
+    if (typeof row !== "object" || row === null) continue;
+    const record = row as { id?: unknown; profileKey?: unknown };
+    if (record.profileKey === profileKey && typeof record.id === "string") {
+      return record.id;
+    }
+  }
+  return null;
+}
+
 /** One step's outcome, so the caller can report what actually happened. */
 export type StepOutcome = "created" | "already-existed";
 
