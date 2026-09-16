@@ -195,6 +195,38 @@ export const styles: Record<string, CSSProperties> = {
     borderRadius: "50%",
     background: "var(--muted-foreground)",
   },
+  // -- Route sidebar (the view rail) -------------------------------------
+  // The host renders this inside its secondary sidebar, so it uses the host's
+  // own surface and border rather than inventing a panel.
+  viewRail: { display: "flex", flexDirection: "column", gap: 2, padding: "4px 8px" },
+  viewRailItem: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    padding: "7px 9px",
+    borderRadius: 8,
+    textDecoration: "none",
+    color: "var(--foreground)",
+    opacity: 0.75,
+    transition: "background-color 120ms ease, color 120ms ease",
+  },
+  viewRailItemActive: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    padding: "7px 9px",
+    borderRadius: 8,
+    textDecoration: "none",
+    background: "var(--sidebar-accent, var(--accent))",
+    color: "var(--sidebar-accent-foreground, var(--accent-foreground))",
+  },
+  viewRailLabel: { fontSize: 13, fontWeight: 600, lineHeight: 1.3 },
+  viewRailNote: {
+    fontSize: 11,
+    lineHeight: 1.4,
+    color: "var(--muted-foreground)",
+  },
+
   /** The note sits under the row, aligned to the label's left edge. */
   sidebarNotes: { listStyle: "none", padding: "0 16px 0 34px", margin: "2px 0 0" },
 };

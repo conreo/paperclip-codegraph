@@ -90,6 +90,17 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: "CodeGraphPage",
         routePath: "codegraph",
       },
+      {
+        // The view rail beside that page, and — because a `routeSidebar` slot
+        // matching the page's `routePath` is what the host checks before drawing
+        // its own Back button — the reason no Back button appears on this page.
+        // Requires `ui.sidebar.register`, which is why that capability is above.
+        type: "routeSidebar",
+        id: "codegraph-route-sidebar",
+        displayName: "CodeGraph views",
+        exportName: "CodeGraphRouteSidebar",
+        routePath: "codegraph",
+      },
     ],
   },
   instanceConfigSchema: INSTANCE_CONFIG_SCHEMA,

@@ -32,11 +32,17 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { usePluginData, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
+import {
+  useHostLocation,
+  usePluginData,
+  type PluginPageProps,
+} from "@paperclipai/plugin-sdk/ui";
 
 import { DATA_KEYS } from "../plugin-keys.js";
 import { sanitizeErrorMessage } from "../errors.js";
 import { ui } from "./chrome.js";
+import { MapView } from "./map-view.js";
+import { VIEW_LABELS, VIEW_NOTES, viewFromHash } from "./views.js";
 import { readerLayout, showsSidePanes } from "./reader-layout.js";
 
 // ---------------------------------------------------------------------------
@@ -100,31 +106,6 @@ interface SourceResponse {
   reason?: string;
   error?: string;
 }
-
-/**
- * The reader's views.
- *
- * CodeGraph's own UI offers Steps · Entry points · Map · Symbol · Flow · Dead
- * code. Only the ones this plugin can actually fill are listed, because a tab
- * that opens a fabricated view is worse than a tab that is not there:
- *
- * - **Symbol** and **Map** are built from the call graph and the index, so both
- *   are real.
- * - **Steps**, **Flow** and **Dead code** need call-path tracking and an
- *   unused-code analysis with export/reference awareness. The index carries no
- *   such marks — a naive "no inbound edge" query returns **zero** candidates on
- *   the real POS index, because route and file nodes reference everything — so
- *   those views would be guesses. They are omitted rather than mocked.
- * - **Entry points** is reachable through the search index (routes are a node
- *   kind) and is planned; it is not listed until it works.
- */
-const VIEWS = ["symbol", "map"] as const;
-type View = (typeof VIEWS)[number];
-
-const VIEW_LABELS: Record<View, string> = {
-  symbol: "Symbol",
-  map: "Map",
-};
 
 const KIND_LABELS: Record<string, string> = {
   function: "Functions",
@@ -197,7 +178,10 @@ export function CodeGraphPage({ context }: PluginPageProps) {
   const organization = reposData?.organization ?? null;
 
   const [projectId, setProjectId] = useState<string | null>(null);
-  const [view, setView] = useState<View>("symbol");
+  // The view lives in the URL, so the rail can link to it, a reload keeps it, and
+  // the two cannot disagree about which is open.
+  const { hash } = useHostLocation();
+  const view = viewFromHash(hash);
   const layout = useReaderLayout();
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -241,12 +225,6 @@ export function CodeGraphPage({ context }: PluginPageProps) {
     { companyId, projectId, nodeId: selected?.id ?? null },
   );
 
-  // The Map view's diagram. Only fetched when that tab is open, so the reader
-  // does not pay for a graph it is not showing.
-  const { data: mapData, loading: mapLoading } = usePluginData<ReaderResponse>(
-    DATA_KEYS.graphNeighbourhood,
-    { companyId, projectId, nodeId: view === "map" ? (selected?.id ?? null) : null, depth: 2 },
-  );
 
   const results = searchData?.results ?? [];
   const active = repositories.find((repo) => repo.projectId === projectId) ?? null;
@@ -312,23 +290,10 @@ export function CodeGraphPage({ context }: PluginPageProps) {
         </div>
       </header>
 
-      <nav style={styles.viewTabs} aria-label="Views">
-        {VIEWS.map((value) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => setView(value)}
-            aria-current={view === value ? "page" : undefined}
-            style={view === value ? styles.viewTabActive : styles.viewTab}
-          >
-            {VIEW_LABELS[value]}
-          </button>
-        ))}
-        <span style={styles.viewTabNote}>
-          Steps, Flow and Dead code are not offered: the index carries no call-path
-          history, and its edges cannot distinguish unused code from a route handler.
-        </span>
-      </nav>
+      <div style={styles.viewHeader}>
+        <h2 style={styles.viewTitle}>{VIEW_LABELS[view]}</h2>
+        <p style={styles.viewNote}>{VIEW_NOTES[view]}</p>
+      </div>
 
       {repositories.length === 0 ? (
         <p style={styles.notice}>
@@ -343,12 +308,7 @@ export function CodeGraphPage({ context }: PluginPageProps) {
       ) : null}
 
       {view === "map" ? (
-        <MapView
-          graph={mapData}
-          loading={mapLoading}
-          seedName={selected?.name ?? null}
-          onOpen={setSelected}
-        />
+        <MapView companyId={companyId} projectId={projectId} organization={organization} />
       ) : (
       <div style={showsSidePanes(layout.kind) ? styles.body : styles.bodyStacked}>
         <Pane
@@ -430,88 +390,6 @@ export function CodeGraphPage({ context }: PluginPageProps) {
           ) : null}
         </footer>
       ) : null}
-    </div>
-  );
-}
-
-/**
- * The Map view: the symbol's neighbourhood as a layered diagram.
- *
- * The one place the layered layout is the right shape — it answers "what does
- * this touch" at a glance, which the reader answers only line by line. Callers
- * above, the seed in the middle, callees below.
- */
-function MapView({
-  graph,
-  loading,
-  seedName,
-  onOpen,
-}: {
-  graph: ReaderResponse | null;
-  loading: boolean;
-  seedName: string | null;
-  onOpen: (symbol: SymbolRef) => void;
-}) {
-  if (!seedName) {
-    return (
-      <div style={styles.mapEmpty}>
-        <p style={styles.dim}>
-          Open a symbol in the Symbol view, then switch here to see its neighbourhood as a
-          diagram.
-        </p>
-      </div>
-    );
-  }
-  if (loading && !graph) {
-    return (
-      <div style={styles.mapEmpty}>
-        <p style={styles.dim}>Drawing…</p>
-      </div>
-    );
-  }
-  const callers = graph?.callers ?? [];
-  const callees = graph?.callees ?? [];
-
-  return (
-    <div style={styles.map}>
-      <div style={styles.mapColumn}>
-        <h3 style={styles.paneTitle}>Callers</h3>
-        {callers.length === 0 ? (
-          <p style={styles.dim}>Nothing calls this.</p>
-        ) : (
-          callers.map((call) => (
-            <button
-              key={`${call.id}:${call.callLine}`}
-              type="button"
-              style={styles.mapNode}
-              onClick={() => onOpen(call)}
-            >
-              {call.name}
-            </button>
-          ))
-        )}
-      </div>
-      <div style={styles.mapColumn}>
-        <h3 style={styles.paneTitle}>This symbol</h3>
-        <div style={styles.mapSeed}>{seedName}</div>
-      </div>
-      <div style={styles.mapColumn}>
-        <h3 style={styles.paneTitle}>Callees</h3>
-        {callees.length === 0 ? (
-          <p style={styles.dim}>This calls nothing recorded.</p>
-        ) : (
-          callees.map((call) => (
-            <button
-              key={`${call.id}:${call.callLine}`}
-              type="button"
-              style={styles.mapNode}
-              onClick={() => onOpen(call)}
-            >
-              {call.name}
-            </button>
-          ))
-        )}
-      </div>
     </div>
   );
 }
@@ -1046,49 +924,12 @@ const styles: Record<string, CSSProperties> = {
   },
   dim: { color: ui.mutedForeground, fontSize: 12, margin: "6px 0" },
   error: { color: ui.primary, fontSize: 12, margin: "6px 0" },
-  // -- View tabs ----------------------------------------------------------
-  // Shaped like the host's own page tab bars: a quiet row of labels with only
-  // the active one marked, so this reads as a section of Paperclip rather than
-  // a toolbar of its own.
-  /** Narrow: source first, panes beneath it, each full width. */
-  bodyStacked: {
-    display: "flex",
-    flexDirection: "column",
-    flex: "1 1 auto",
-    minHeight: 0,
-    overflowY: "auto",
-  },
-  viewTabs: {
-    display: "flex",
-    alignItems: "center",
-    gap: 4,
-    padding: "6px 14px",
-    borderBottom: `1px solid ${ui.border}`,
-    flexWrap: "wrap",
-  },
-  viewTab: {
-    padding: "4px 10px",
-    borderRadius: 6,
-    border: "1px solid transparent",
-    background: "transparent",
-    color: ui.mutedForeground,
-    fontFamily: "inherit",
-    fontSize: 12.5,
-    fontWeight: 500,
-    cursor: "pointer",
-  },
-  viewTabActive: {
-    padding: "4px 10px",
-    borderRadius: 6,
-    border: `1px solid ${ui.border}`,
-    background: ui.accent,
-    color: ui.accentForeground,
-    fontFamily: "inherit",
-    fontSize: 12.5,
-    fontWeight: 600,
-    cursor: "pointer",
-  },
-  viewTabNote: { marginLeft: "auto", color: ui.mutedForeground, fontSize: 11 },
+  // -- View header --------------------------------------------------------
+  // The rail carries the navigation; this names whichever view is open, so the
+  // page still says what it is when the rail is collapsed.
+  viewHeader: { padding: "10px 14px 8px", borderBottom: `1px solid ${ui.border}` },
+  viewTitle: { margin: 0, fontSize: 15, fontWeight: 600, letterSpacing: -0.2 },
+  viewNote: { margin: "2px 0 0", fontSize: 12, color: ui.mutedForeground, lineHeight: 1.45 },
 
   // -- Map ----------------------------------------------------------------
   map: {

@@ -20,4 +20,5 @@
 
 export { SettingsPage } from "./admin.js";
 export { CodeGraphSidebar } from "./sidebar.js";
+export { CodeGraphRouteSidebar } from "./route-sidebar.js";
 export { CodeGraphPage } from "./page.js";

@@ -34,6 +34,8 @@ export const DATA_KEYS = {
   graphProjects: "graph-projects",
   /** The three panes of the reader: callers, the symbol, and its callees. */
   graphReader: "graph-reader",
+  /** The architecture map: modules, the references between them, and cycles. */
+  graphMap: "graph-map",
   /** A bounded source excerpt for one symbol. */
   graphSource: "graph-source",
   /** Symbol search in one of this org's repositories. */
@@ -100,6 +102,13 @@ export const KEYS_WITHOUT_UI_CALLER: readonly string[] = [
   DATA_KEYS.graphDiagnose,
   DATA_KEYS.indexStatus,
   DATA_KEYS.verifyScope,
+  // Unreferenced since the Map tab became an architecture map. It still answers a
+  // question nothing else does — the layered call neighbourhood around one symbol,
+  // with the tested layout in `src/graph/layout.ts` — and it is exercised by tests,
+  // so it stays registered and reachable by a documented curl rather than being
+  // deleted because a UI stopped using it. Nothing hidden here: this is the list
+  // that says so.
+  DATA_KEYS.graphNeighbourhood,
 ];
 
 export const ALL_DATA_KEYS: readonly string[] = Object.values(DATA_KEYS);

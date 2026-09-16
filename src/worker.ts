@@ -96,6 +96,14 @@ import {
 } from "./graph/neighbourhood.js";
 import { readExcerpt } from "./graph/source.js";
 import {
+  MAP_EDGE_QUERY,
+  MAP_FILE_QUERY,
+  buildRepoMap,
+  type IndexedEdge,
+  type IndexedFile,
+} from "./graph/architecture.js";
+import { DatabaseSync } from "node:sqlite";
+import {
   NO_GIT_IDENTITY,
   indexRoot,
   isGitRepository,
@@ -132,6 +140,17 @@ const GIT_TIMEOUT_MS = 5_000;
  * one costs a node lookup.
  */
 const MAX_READER_EDGES = 40;
+
+/**
+ * Bounds for the architecture map.
+ *
+ * The map reads *every* edge, because counting references across module
+ * boundaries needs all of them, so both the row count and the resulting picture
+ * are capped: a hundred boxes is not a map, it is a wall.
+ */
+const MAX_MAP_EDGES = 200_000;
+const MAX_MAP_MODULES = 60;
+const MAX_MAP_DEPTH = 4;
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -1257,6 +1276,66 @@ const plugin = definePlugin({
       }
     });
 
+    /**
+     * The architecture map: modules, what references what, and where the cycles are.
+     *
+     * A different question from the reader's. The reader answers "where does this
+     * happen"; the map answers "how is this codebase shaped" — each module one
+     * layer above everything it depends on, so reading down follows the
+     * dependency direction.
+     *
+     * The index is read directly rather than through the MCP tools because the
+     * map needs *all* edges between files to count references across module
+     * boundaries; no single CodeGraph tool exposes that aggregate.
+     */
+    ctx.data.register(DATA_KEYS.graphMap, async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) return { error: "companyId is required" };
+
+      const root = asString(params?.["root"]);
+      const requestedDepth = params?.["depth"];
+      const depthIsAutomatic =
+        typeof requestedDepth !== "number" || !Number.isFinite(requestedDepth);
+
+      try {
+        const projectPath = await repositoryForProject(companyId, asString(params?.["projectId"]));
+        const dbPath = path.join(projectPath, CODEGRAPH_INDEX_DIR, "codegraph.db");
+        const db = new DatabaseSync(dbPath, { readOnly: true });
+        let files: IndexedFile[];
+        let edges: IndexedEdge[];
+        try {
+          const fileRows = db.prepare(MAP_FILE_QUERY).all() as Array<Record<string, unknown>>;
+          files = fileRows.map((row) => ({
+            filePath: String(row["file_path"] ?? ""),
+            fileKind: null,
+            nodes: Number(row["nodes"] ?? 0),
+          }));
+
+          const edgeRows = db
+            .prepare(MAP_EDGE_QUERY)
+            .all(MAX_MAP_EDGES) as Array<Record<string, unknown>>;
+          edges = edgeRows.map((row) => ({
+            sourceFile: row["source_file"] === null ? null : String(row["source_file"]),
+            targetFile: row["target_file"] === null ? null : String(row["target_file"]),
+            kind: String(row["kind"] ?? ""),
+          }));
+        } finally {
+          db.close();
+        }
+
+        const map = buildRepoMap(files, edges, {
+          root: root ?? null,
+          depth: depthIsAutomatic ? null : Number(requestedDepth),
+          maxModules: MAX_MAP_MODULES,
+          maxDepth: MAX_MAP_DEPTH,
+        });
+
+        return { ...map, requestedRoot: root ?? "" };
+      } catch (error) {
+        return graphFailure(error);
+      }
+    });
+
     /** Symbol search in one of this org's repositories. */
     ctx.data.register(DATA_KEYS.graphSearch, async (params) => {
       const companyId = asString(params?.["companyId"]);
@@ -1285,11 +1364,12 @@ const plugin = definePlugin({
           companyId,
           asString(params?.["projectId"]),
         );
-        // Both shapes, because both views need one. The graph carries the whole
-        // neighbourhood as nodes and edges, for the diagram; `callers` and
-        // `callees` carry the one-hop sides with resolved names and call lines,
-        // which is what the map draws as its columns. Returning them together
-        // means the Map tab does not need a second request.
+        // Both shapes in one response: the graph carries the whole neighbourhood
+        // as nodes and edges, for a diagram, and `callers`/`callees` carry the
+        // one-hop sides with resolved names and call lines, which is what a
+        // caller/callee view draws. No UI calls this today — the Map tab became an
+        // architecture map — so it is documented in KEYS_WITHOUT_UI_CALLER and
+        // reachable by curl, rather than deleted because a page moved on.
         const oneHop = (edges: GraphEdge[], direction: "in" | "out") =>
           edges.slice(0, MAX_READER_EDGES).map((edge) => {
             const otherId = direction === "in" ? edge.source : edge.target;
