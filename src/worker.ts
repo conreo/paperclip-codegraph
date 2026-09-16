@@ -43,6 +43,7 @@ import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plu
 
 import {
   CODEGRAPH_FOLDER_KEY,
+  CODEGRAPH_INDEX_DIR,
   CODEGRAPH_TOOLS,
   PLUGIN_ID,
   UPSTREAM_PROJECT_PATH_PARAM,
@@ -1129,6 +1130,61 @@ const plugin = definePlugin({
       const { root } = await repositoryIdentity(resolved);
       return root;
     };
+
+    /**
+     * Why the graph view believes what it believes about one project.
+     *
+     * Exists because "not indexed" on a repository that plainly is indexed is not
+     * debuggable from the outside: the browser never sees the host's paths, so
+     * there is no way to tell a stale render from a wrong resolution. This
+     * reports the chain the plugin actually followed, with host layout redacted
+     * the same way the rest of the plugin redacts it.
+     */
+    ctx.data.register("graph-diagnose", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      const projectId = asString(params?.["projectId"]);
+      if (!companyId || !projectId) return { error: "companyId and projectId are required" };
+      try {
+        const { config: scoped } = await loadConfig(ctx, companyId);
+        const roots = containmentRoots(scoped, await repositoryRoot(ctx, companyId));
+
+        const workspace = await ctx.projects.getPrimaryWorkspace(projectId, companyId);
+        const accepted = acceptWorkspacePath(workspace?.path, roots);
+        if (!accepted) {
+          return {
+            projectId,
+            workspaceAccepted: false,
+            reason:
+              "The host returned no workspace path for this project, or it failed containment.",
+            containmentRootCount: roots.length,
+          };
+        }
+
+        const { root, identity } = await repositoryIdentity(accepted);
+        const indexed = await isIndexed(root);
+
+        return {
+          projectId,
+          workspaceAccepted: true,
+          // `path.basename`, not `redactPath`: the latter produces an audit *key*
+          // (two trailing segments plus a hash), which for a managed workspace
+          // emits the project UUID. A diagnostic must not disclose more than the
+          // alias the operator already sees.
+          workspaceAlias: path.basename(accepted),
+          repoUrl: workspace?.repoUrl ?? null,
+          gitRootAlias: path.basename(root),
+          gitRootIsWorkspace: root === accepted,
+          repositoryName: identity.name,
+          indexed,
+          indexPathAlias: `${path.basename(root)}/${CODEGRAPH_INDEX_DIR}`,
+          hasGitEntry: await isGitRepository(root),
+          containmentRootCount: roots.length,
+          gitAvailable: (await gitIdentityRunner()) !== null,
+        };
+      } catch (error) {
+        return graphFailure(error);
+      }
+    });
 
     /** Symbol search in one of this org's repositories. */
     ctx.data.register("graph-search", async (params) => {
