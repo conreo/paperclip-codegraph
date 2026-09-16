@@ -71,7 +71,10 @@ interface RepoRow {
   projectId: string;
   name: string;
   alias: string;
+  repoName?: string | null;
   indexed: boolean;
+  /** True when an operator has switched CodeGraph off for this repository. */
+  blocked?: boolean;
   fileCount?: number | null;
   nodeCount?: number | null;
   lastIndexed?: string | null;
@@ -329,8 +332,9 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
       </section>
 
       <Configuration companyId={companyId} onMessage={setMessage} />
-      <Repositories companyId={companyId} onMessage={setMessage} />
-      <Access companyId={companyId} onMessage={setMessage} />
+      <RepositoryAccess companyId={companyId} onMessage={setMessage} />
+      <Indexing companyId={companyId} onMessage={setMessage} />
+      <AgentExceptions companyId={companyId} onMessage={setMessage} />
 
       {message ? (
         <p style={message.kind === "ok" ? styles.good : styles.bad}>{message.text}</p>
@@ -578,7 +582,7 @@ function boundsSummary(draft: OperatorConfig): string {
  * `codegraph status` per repository — correct here, where an operator is
  * looking at index health, and deliberately not what the sidebar uses.
  */
-function Repositories({
+function Indexing({
   companyId,
   onMessage,
 }: {
@@ -614,10 +618,11 @@ function Repositories({
 
   return (
     <section style={styles.card}>
-      <h3 style={styles.h3}>Repositories</h3>
+      <h3 style={styles.h3}>Indexing</h3>
       <p style={styles.muted}>
-        One per Paperclip project with a workspace. Indexing is per repository and is what
-        the graph and the tools read — a repository with no index answers nothing.
+        The index is what the graph and the tools read — a repository with no index answers
+        nothing, however many tools are enabled. Building one is explicit because it reads
+        the whole repository.
       </p>
       {loading && repositories.length === 0 ? (
         <p style={styles.muted}>Loading…</p>
@@ -660,90 +665,187 @@ function Repositories({
 }
 
 /**
- * Who may use CodeGraph.
+ * The primary access control: which of this org's repositories CodeGraph may read.
  *
- * Default is everyone: an agent working in one of this org's projects reads that
- * project's repository, and Paperclip already decides who works where. Unticking
- * is the only edit this surface offers, so it can only narrow.
+ * This exists because gating by agent was the wrong primary. An agent's reach
+ * already follows the Paperclip project it is working in — that is the
+ * organisational fact, and it changes when someone changes team. An agent list is
+ * a copy of that fact which does not update when the fact does, so access
+ * outlives the reason it was granted. A repository switch is derived from work
+ * the operator already did in Paperclip, and cannot drift.
+ *
+ * It also scales: this org has ~77 agents and two repositories.
  */
-function Access({
+function RepositoryAccess({
   companyId,
   onMessage,
 }: {
   companyId: string;
   onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
 }) {
-  // Both keys carry the same rows; `access` is the one that knows the current
-  // per-agent override, so it drives the switches.
-  const { data: access } = usePluginData<{ agents: AgentRow[]; toolCount: number }>("access");
-  const { data: agents } = usePluginData<{ agents: AgentRow[] }>("agents");
-  const setAccess = usePluginAction("set-access");
-
-  const rows = access?.agents ?? agents?.agents ?? [];
-  const [granted, setGranted] = useState<Record<string, boolean>>({});
+  const { data, loading, refresh } = usePluginData<{ repositories: RepoRow[] }>(
+    "graph-projects",
+    { companyId },
+  );
+  const setRepositoryAccess = usePluginAction("set-repository-access");
   const [busy, setBusy] = useState<string | null>(null);
 
-  // Everyone is on by default; the switches exist only to narrow.
-  useEffect(() => {
-    if (rows.length === 0) return;
-    setGranted((current) =>
-      Object.keys(current).length > 0
-        ? current
-        : // `!== false` rather than a truthy check: an absent override means the
-          // agent is allowed, so the default must read as on.
-          Object.fromEntries(rows.map((agent) => [agent.id, agent.enabled !== false])),
-    );
-  }, [rows]);
+  const repositories = data?.repositories ?? [];
 
-  const save = useCallback(async () => {
-    setBusy("access");
-    onMessage(null);
-    try {
-      await setAccess({
-        companyId,
-        grantedAgentIds: rows.filter((agent) => granted[agent.id]).map((agent) => agent.id),
-        listedAgentIds: rows.map((agent) => agent.id),
-      });
-      onMessage({ kind: "ok", text: "Saved." });
-    } catch (error) {
-      onMessage({ kind: "error", text: sanitizeErrorMessage(error) });
-    } finally {
-      setBusy(null);
-    }
-  }, [companyId, granted, onMessage, rows, setAccess]);
+  const toggle = useCallback(
+    async (projectId: string, blocked: boolean) => {
+      setBusy(projectId);
+      onMessage(null);
+      try {
+        await setRepositoryAccess({ companyId, projectId, blocked });
+        // Re-requests the data from the worker. Returns void, so nothing to await.
+        refresh();
+        onMessage({
+          kind: "ok",
+          text: blocked
+            ? "CodeGraph is now off for that repository. Agents working in it get no CodeGraph tools."
+            : "CodeGraph is available for that repository again.",
+        });
+      } catch (error) {
+        onMessage({ kind: "error", text: sanitizeErrorMessage(error) });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [companyId, onMessage, refresh, setRepositoryAccess],
+  );
 
   return (
     <section style={styles.card}>
-      <h3 style={styles.h3}>Who may use it</h3>
+      <h3 style={styles.h3}>Repositories</h3>
       <p style={styles.muted}>
-        On for every agent by default. Untick to restrict — this can only narrow, and it
-        never widens what Paperclip already allows.
+        Availability follows the Paperclip project an agent is working in, so this is set
+        per repository rather than per agent. Switching one off is the one edit here, and
+        it can only narrow.
       </p>
-      {rows.length > 0 ? (
-        <>
+      {loading && repositories.length === 0 ? (
+        <p style={styles.muted}>Loading…</p>
+      ) : repositories.length === 0 ? (
+        <p style={styles.muted}>
+          No repositories yet. One appears once a project in this company has a repository
+          workspace.
+        </p>
+      ) : (
+        <ul style={styles.list}>
+          {repositories.map((repo) => (
+            <li key={repo.projectId} style={styles.checkRow}>
+              <label style={styles.checkLabel}>
+                <input
+                  type="checkbox"
+                  // Checked means available, so the box reads as "CodeGraph here".
+                  checked={repo.blocked !== true}
+                  disabled={busy !== null}
+                  onChange={(event) => void toggle(repo.projectId, !event.target.checked)}
+                />
+                <span>
+                  {repo.name}
+                  {repo.repoName && repo.repoName !== repo.name ? (
+                    <span style={styles.hintInline}> ({repo.repoName})</span>
+                  ) : null}
+                  {repo.indexed ? null : (
+                    <span style={styles.hintInline}> — not indexed yet</span>
+                  )}
+                </span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Per-agent exceptions.
+ *
+ * Deliberately secondary, and collapsed by default. Agents already reach the
+ * repositories their projects use, so there is nothing to grant here — this is
+ * for revoking for one agent in the cases the derived rules cannot express, such
+ * as a contractor whose access should not follow their project membership.
+ *
+ * Kept as an explicit list rather than removed, because "revoke for one agent"
+ * is a real need; kept demoted because presenting it as the main control implied
+ * that access is granted by ticking, and it never was: Paperclip denies these
+ * tools by default until a tool profile allows them.
+ */
+function AgentExceptions({
+  companyId,
+  onMessage,
+}: {
+  companyId: string;
+  onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const { data: access } = usePluginData<{ agents: AgentRow[]; toolCount: number }>("access");
+  const { data: agents } = usePluginData<{ agents: AgentRow[] }>("agents");
+  const setAgentAccess = usePluginAction("set-agent-access");
+
+  const rows = access?.agents ?? agents?.agents ?? [];
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const revokedCount = rows.filter((agent) => agent.enabled === false).length;
+
+  const toggle = useCallback(
+    async (agentId: string, enabled: boolean) => {
+      setBusy(agentId);
+      onMessage(null);
+      try {
+        await setAgentAccess({ companyId, agentId, enabled });
+        onMessage({
+          kind: "ok",
+          text: enabled ? "Access restored for that agent." : "Access revoked for that agent.",
+        });
+      } catch (error) {
+        onMessage({ kind: "error", text: sanitizeErrorMessage(error) });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [companyId, onMessage, setAgentAccess],
+  );
+
+  return (
+    <section style={styles.card}>
+      <h3 style={styles.h3}>Exceptions</h3>
+      <p style={styles.muted}>
+        Every agent reaches the repositories its projects use. This is only for taking that
+        away from a specific agent
+        {revokedCount > 0 ? ` — ${revokedCount} currently revoked` : ""}. Nothing here can
+        grant access, so there is nothing to configure unless you need an exception.
+      </p>
+
+      <button style={styles.button} onClick={() => setOpen((value) => !value)}>
+        {open ? "Hide agents" : `Show ${rows.length} agents`}
+      </button>
+
+      {open ? (
+        rows.length > 0 ? (
           <ul style={styles.list}>
             {rows.map((agent) => (
               <li key={agent.id} style={styles.checkRow}>
                 <label style={styles.checkLabel}>
                   <input
                     type="checkbox"
-                    checked={granted[agent.id] ?? false}
-                    onChange={(event) =>
-                      setGranted((current) => ({ ...current, [agent.id]: event.target.checked }))
-                    }
+                    // Checked means the agent still has access. Absent override
+                    // means allowed, so the default must read as on.
+                    checked={agent.enabled !== false}
+                    disabled={busy !== null}
+                    onChange={(event) => void toggle(agent.id, event.target.checked)}
                   />
                   {agent.name}
                 </label>
               </li>
             ))}
           </ul>
-          <button style={styles.button} disabled={busy !== null} onClick={() => void save()}>
-            {busy === "access" ? "Saving…" : "Save access"}
-          </button>
-        </>
-      ) : (
-        <p style={styles.muted}>No agents in this company yet.</p>
-      )}
+        ) : (
+          <p style={styles.muted}>No agents in this company yet.</p>
+        )
+      ) : null}
     </section>
   );
 }

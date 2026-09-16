@@ -94,6 +94,8 @@ export const styles: Record<string, CSSProperties> = {
     margin: "4px 0 0",
     lineHeight: 1.45,
   },
+  /** A quiet aside inside a label, e.g. the repository name beside a project name. */
+  hintInline: { color: "var(--muted-foreground, #6b7280)", fontSize: 12 },
   row: { display: "flex", gap: 12, alignItems: "center", marginTop: 12, flexWrap: "wrap" },
   repoRow: { display: "flex", gap: 8, alignItems: "center", marginBottom: 8 },
   iconButton: {

@@ -76,11 +76,13 @@ import { buildNativeMcpPlan, renderPlanAsCurl } from "./governance/provision.js"
 import {
   ensureBinary,
   ensureIndex,
+  resolveCommand,
+  runCommand,
   indexStatus,
   isIndexed,
   rebuildIndex,
 } from "./codegraph/manage.js";
-import { mergeGovernance } from "./governance/merge.js";
+import { mergeGovernance, setAgentAccess, setProjectAccess } from "./governance/merge.js";
 import {
   GraphUnavailable,
   neighbourhood,
@@ -88,6 +90,12 @@ import {
   searchNodes,
 } from "./graph/neighbourhood.js";
 import { readExcerpt } from "./graph/source.js";
+import {
+  NO_GIT_IDENTITY,
+  indexRoot,
+  type CommandRunner,
+  type GitIdentity,
+} from "./git/identity.js";
 import {
   acceptWorkspacePath,
   buildWorkspaceGovernance,
@@ -102,6 +110,14 @@ const pool = new CodeGraphClientPool();
 
 /** Tool names registered in this worker instance; registration is not idempotent. */
 const registeredTools = new Set<string>();
+
+/**
+ * How long one `git rev-parse` may take.
+ *
+ * Short on purpose: these are local config reads, so anything slow means git is
+ * wedged rather than busy — and the caller falls back to the workspace path.
+ */
+const GIT_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -843,6 +859,46 @@ const plugin = definePlugin({
     });
 
     /**
+     * A `git` runner for identity lookups, or null when git is unavailable.
+     *
+     * The worker is a long-lived service often started with a minimal
+     * environment, so `git` is resolved through the same search as `codegraph`
+     * rather than trusting `PATH`. Only the two read-only subcommands the
+     * identity module issues are ever run, and the child gets no credentials:
+     * `rev-parse` and `remote get-url` read local config and never contact a
+     * remote, so there is nothing here for a hostile repository to exploit.
+     */
+    const gitIdentityRunner = async (): Promise<CommandRunner | null> => {
+      const resolved = await resolveCommand("git");
+      if (!resolved) return null;
+      return async (command, args, cwd) => {
+        const result = await runCommand(command, args, {
+          cwd,
+          timeoutMs: GIT_TIMEOUT_MS,
+          env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "" },
+        });
+        // `git` reports "not a repository" on stderr with a non-zero exit; the
+        // identity module treats a throw as "no answer".
+        if (result.code !== 0) throw new Error(result.stderr.trim() || `git exited ${result.code}`);
+        return result.stdout;
+      };
+    };
+
+    /**
+     * The repository a workspace belongs to, and where its index lives.
+     *
+     * Returns the workspace itself when git cannot answer, so every non-git or
+     * git-less deployment keeps behaving exactly as it did before.
+     */
+    const repositoryIdentity = async (
+      workspacePath: string,
+    ): Promise<{ root: string; identity: GitIdentity }> => {
+      const run = await gitIdentityRunner();
+      if (!run) return { root: workspacePath, identity: NO_GIT_IDENTITY };
+      return indexRoot(workspacePath, run);
+    };
+
+    /**
      * This org's repositories, taken from its own Paperclip projects.
      *
      * Read-only and display-only: a repository is not configured here, it follows
@@ -878,16 +934,30 @@ const plugin = definePlugin({
           const workspace = await ctx.projects.getPrimaryWorkspace(project.id, companyId);
           const path_ = acceptWorkspacePath(workspace?.path, roots);
           if (!path_) continue;
+
+          // The index lives at the repository root, which is the workspace
+          // itself for an ordinary checkout and an ancestor of it when the
+          // project points into a monorepo.
+          const { root: indexAt, identity } = await repositoryIdentity(path_);
+
           const entry: Record<string, unknown> = {
             projectId: project.id,
-            name: project.name ?? path.basename(path_),
+            name: project.name ?? identity.name ?? path.basename(path_),
             // Alias only — this feeds a UI and must not disclose host layout.
-            alias: path.basename(path_),
-            indexed: await isIndexed(path_),
+            // The repository name is preferred over the folder name because the
+            // folder is an accident of how Paperclip checked the code out.
+            alias: identity.name ?? path.basename(path_),
+            repoName: identity.name,
+            indexed: await isIndexed(indexAt),
           };
+          if (identity.root && identity.root !== path_) {
+            // The project is a subdirectory of the checkout. Worth showing: it
+            // explains why the graph may include more than this project.
+            entry["repositoryRootIsParent"] = true;
+          }
           if (entry["indexed"] && binary.ok) {
             const status = await indexStatus({
-              projectPath: path_,
+              projectPath: indexAt,
               command: binary.resolvedPath ?? scoped.codegraphCommand,
               timeoutMs: 20_000,
               env,
@@ -930,17 +1000,29 @@ const plugin = definePlugin({
         return { repositories: [], detail: "This org has no readable projects." };
       }
 
+      // One read of the governance document, so every row reports its own
+      // override rather than a per-row lookup.
+      const store = new GovernanceStore(ctx.state);
+      const companyGovernance = await store.getCompany(companyId);
+
       for (const project of projects) {
         try {
           const workspace = await ctx.projects.getPrimaryWorkspace(project.id, companyId);
           const resolved = acceptWorkspacePath(workspace?.path, roots);
           if (!resolved) continue;
+          const { root: indexAt, identity } = await repositoryIdentity(resolved);
           repositories.push({
             projectId: project.id,
-            name: project.name ?? path.basename(resolved),
-            // Alias only — this feeds the browser and must not disclose host layout.
-            alias: path.basename(resolved),
-            indexed: await isIndexed(resolved),
+            name: project.name ?? identity.name ?? path.basename(resolved),
+            // The repository's own name, not the folder's: the folder is an
+            // accident of how Paperclip checked the code out.
+            alias: identity.name ?? path.basename(resolved),
+            repoName: identity.name,
+            indexed: await isIndexed(indexAt),
+            // The primary control: whether this org may read this repository at
+            // all. Absent means yes — access is derived, and this only narrows.
+            blocked:
+              companyGovernance?.projectsByPaperclipProject?.[project.id]?.enabled === false,
           });
         } catch {
           // A project with no usable workspace is simply not offered.
@@ -986,7 +1068,11 @@ const plugin = definePlugin({
           "not_indexed",
         );
       }
-      return resolved;
+      // The index sits at the repository root. For an ordinary checkout that is
+      // the workspace; when the project points into a monorepo it is an
+      // ancestor, and opening `<workspace>/.codegraph` would find no index at all.
+      const { root } = await repositoryIdentity(resolved);
+      return root;
     };
 
     /** Symbol search in one of this org's repositories. */
@@ -1382,6 +1468,72 @@ const plugin = definePlugin({
       });
 
       return { plan, curl: renderPlanAsCurl(plan) };
+    });
+
+    /**
+     * The primary access control: whether this org may read one repository.
+     *
+     * A targeted edit rather than a whole-form save, because the caller knows
+     * about one repository and nothing else. `setProjectAccess` is pure and
+     * tested for the destructive case: it changes only this project's override,
+     * keeps any `projectKey` or `policy` attached to it, and never raises
+     * `company.enabled`.
+     *
+     * This can only narrow. Blocking writes `enabled: false` for the project;
+     * unblocking removes that flag, and the company binding still has to allow
+     * the repository — and Paperclip still has to allow the tool.
+     */
+    ctx.actions.register("set-repository-access", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      const projectId = asString(params?.["projectId"]);
+      if (!companyId || !projectId) {
+        throw new Error("companyId and projectId are required");
+      }
+      const blocked = params?.["blocked"] === true;
+
+      const store = new GovernanceStore(ctx.state);
+      const current = await store.getCompany(companyId);
+      const next = setProjectAccess(current, projectId, !blocked);
+      await store.setCompany(companyId, next);
+
+      await audit(
+        ctx,
+        { companyId, agentId: null, runId: null, paperclipProjectId: projectId },
+        blocked ? "CodeGraph blocked for a repository" : "CodeGraph unblocked for a repository",
+        { projectId, blocked },
+      );
+
+      return { ok: true, blocked };
+    });
+
+    /**
+     * Narrow one agent's access.
+     *
+     * An **exception**, not a grant: agents already reach the repositories their
+     * projects use, so this exists to revoke for one agent in the cases the
+     * derived rules cannot express. Also a targeted edit, so unticking one agent
+     * cannot disturb another — `mergeGovernance`'s whole-form shape is kept below
+     * for the older surface.
+     */
+    ctx.actions.register("set-agent-access", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      const agentId = asString(params?.["agentId"]);
+      if (!companyId || !agentId) throw new Error("companyId and agentId are required");
+      const enabled = params?.["enabled"] !== false;
+
+      const store = new GovernanceStore(ctx.state);
+      const current = await store.getCompany(companyId);
+      const next = setAgentAccess(current, agentId, enabled);
+      await store.setCompany(companyId, next);
+
+      await audit(
+        ctx,
+        { companyId, agentId, runId: null, paperclipProjectId: null },
+        enabled ? "CodeGraph access restored for an agent" : "CodeGraph access revoked for an agent",
+        { agentId, enabled },
+      );
+
+      return { ok: true, enabled };
     });
 
     /**

@@ -141,3 +141,94 @@ export function mergeGovernance(
     policy,
   };
 }
+
+/**
+ * Narrow one Paperclip project's access, leaving everything else alone.
+ *
+ * ## Why this is not `mergeGovernance`
+ *
+ * `mergeGovernance` is shaped around the settings form: it takes a list of
+ * repositories and a list of ticked agents and reconciles the document against
+ * them. This is the opposite operation — a single, targeted edit that must not
+ * read anything else in the page state, because the caller only knows about one
+ * repository.
+ *
+ * The rules are the same rule as `mergeGovernance`, applied to one scope:
+ *
+ *   - **Narrowing only.** Removing an override cannot grant anything: the
+ *     company binding still has to allow the repository, and CodeGraph is still
+ *     denied by default in Paperclip. So re-enabling is safe to express as the
+ *     absence of an override.
+ *   - **Nothing else is touched.** A project override may carry a `projectKey`
+ *     or a per-project `policy`; re-enabling clears only `enabled` and keeps
+ *     those, and an override that held nothing else is removed rather than left
+ *     as an empty object.
+ *   - **`company.enabled` is never raised.** A repository cannot switch a
+ *     company back on that an admin turned off.
+ */
+export function setProjectAccess(
+  current: CompanyGovernance | null,
+  paperclipProjectId: string,
+  enabled: boolean,
+): CompanyGovernance {
+  const company: CompanyGovernance = current ?? { enabled: false };
+  const overrides: Record<string, ScopeOverride> = {
+    ...(company.projectsByPaperclipProject ?? {}),
+  };
+
+  const existing = overrides[paperclipProjectId];
+  if (enabled) {
+    if (existing) {
+      const { enabled: _enabled, ...rest } = existing;
+      if (Object.keys(rest).length > 0) overrides[paperclipProjectId] = rest;
+      else delete overrides[paperclipProjectId];
+    }
+  } else {
+    overrides[paperclipProjectId] = { ...(existing ?? {}), enabled: false };
+  }
+
+  const { projectsByPaperclipProject: _previous, ...rest } = company;
+  return {
+    // Never silently re-enable a company an admin turned off.
+    ...rest,
+    enabled: company.enabled,
+    ...(Object.keys(overrides).length > 0
+      ? { projectsByPaperclipProject: overrides }
+      : {}),
+  };
+}
+
+/**
+ * Narrow one agent's access, leaving everything else alone.
+ *
+ * The agent counterpart to {@link setProjectAccess}, and the same rules: an
+ * agent override is an *exception*, so removing it restores the derived default
+ * rather than granting something new, and any narrowing policy attached to the
+ * agent survives being re-enabled.
+ */
+export function setAgentAccess(
+  current: CompanyGovernance | null,
+  agentId: string,
+  enabled: boolean,
+): CompanyGovernance {
+  const company: CompanyGovernance = current ?? { enabled: false };
+  const overrides: Record<string, ScopeOverride> = { ...(company.agents ?? {}) };
+
+  const existing = overrides[agentId];
+  if (enabled) {
+    if (existing) {
+      const { enabled: _enabled, ...rest } = existing;
+      if (Object.keys(rest).length > 0) overrides[agentId] = rest;
+      else delete overrides[agentId];
+    }
+  } else {
+    overrides[agentId] = { ...(existing ?? {}), enabled: false };
+  }
+
+  const { agents: _previous, ...rest } = company;
+  return {
+    ...rest,
+    enabled: company.enabled,
+    ...(Object.keys(overrides).length > 0 ? { agents: overrides } : {}),
+  };
+}
