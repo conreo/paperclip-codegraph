@@ -51,7 +51,7 @@ gh release create v0.1.0 --title "v0.1.0" --notes-file docs/RELEASE-NOTES-0.1.0.
 
 ## Paperclip plugin registry / marketplace
 
-**No submission endpoint was found.** Evidence:
+**No official submission endpoint exists.** Evidence:
 
 - `paperclipai plugin --help` lists install/list/enable/disable/inspect/examples/
   ui-contributions/tools/tool:execute/health/logs/upgrade/config/… — there is no
@@ -63,10 +63,32 @@ gh release create v0.1.0 --title "v0.1.0" --notes-file docs/RELEASE-NOTES-0.1.0.
   community-maintained list rather than a registry with an API.
 
 The closest thing to a registry entry is therefore a pull request adding the
-plugin to `awesome-paperclip`. If Paperclip later ships a registry, the artifact
-is already in the shape it would consume: a public npm package whose
-`package.json` carries the `paperclipPlugin` runtime entrypoints and whose
-manifest passes host validation (confirmed by `status=ready` on install).
+plugin to the community list. **Submitted:**
+
+- **PR:** https://github.com/gsxdsm/awesome-paperclip/pull/41 — adds
+  `paperclip-codegraph` to the *Plugins* category in alphabetical position,
+  with the repo and npm links and a checklist against that repo's quality
+  standards.
+
+If Paperclip later ships an official registry, the artifact is already in the
+shape it would consume: a public npm package whose `package.json` carries the
+`paperclipPlugin` runtime entrypoints and whose manifest passes host validation
+(confirmed by `status=ready` on install).
+
+## Published artifacts
+
+| Artifact | Location |
+|---|---|
+| GitHub repository (public) | https://github.com/conreo/paperclip-codegraph |
+| GitHub release `v0.1.0` | https://github.com/conreo/paperclip-codegraph/releases/tag/v0.1.0 |
+| npm package | `paperclip-codegraph@0.1.0` — https://www.npmjs.com/package/paperclip-codegraph |
+| Community list PR | https://github.com/gsxdsm/awesome-paperclip/pull/41 |
+
+Verified after publishing: the plugin was **uninstalled from the local path and
+reinstalled from the npm registry** into the live Paperclip `2026.817.0`
+instance (`✓ Installed paperclip-codegraph v0.1.0 (ready)`), and the full
+23/23 isolation suite was re-run against that npm-installed artifact
+(`docs/evidence/e2e-isolation-npm-install.txt`).
 
 ## Local development install
 
