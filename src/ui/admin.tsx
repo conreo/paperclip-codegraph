@@ -34,6 +34,7 @@ import {
 import { sanitizeErrorMessage } from "../errors.js";
 import { readOperatorConfig, mergeOperatorConfig, type OperatorConfig } from "../config.js";
 import { StatusLine, styles } from "./chrome.js";
+import { useRefreshSignal } from "./refresh.js";
 import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
 
 /** Must match the manifest id; the host namespaces tools with it. */
@@ -137,16 +138,32 @@ async function attempt(fn: () => Promise<unknown>): Promise<StepOutcome> {
 
 export function SettingsPage({ context }: PluginSettingsPageProps) {
   const companyId = context.companyId;
+  const { refresh, revision } = useRefreshSignal();
 
   const { data: readiness, loading: readinessLoading, error: readinessError } =
     usePluginData<Readiness>(DATA_KEYS.readiness);
 
-  // The org's name, so the page says whose code it configures. Falls back to the
-  // URL prefix, which is the only identity the host context carries.
-  const { data: overview } = usePluginData<{ organization?: string | null }>(DATA_KEYS.graphProjects, {
-    companyId,
-  });
+  /**
+   * The one read of the repositories for this page.
+   *
+   * The Status section used to take its repository fact from the governance
+   * *binding* while the Repositories section took it from the org's actual
+   * projects, so the two contradicted each other on screen: "No repository yet"
+   * directly above a repository with 640 files and 12,085 nodes. Bindings are an
+   * override mechanism, not a declaration of what exists, so Status now reports
+   * the same repositories the rest of the page lists.
+   */
+  const { data: overview, loading: overviewLoading } = usePluginData<{
+    organization?: string | null;
+    repositories: RepoRow[];
+    skippedProjects?: number;
+    enabled?: boolean;
+  }>(DATA_KEYS.graphProjects, { companyId, revision });
+
   const organization = overview?.organization ?? null;
+  const repositories = overview?.repositories ?? [];
+  const indexedCount = repositories.filter((repo) => repo.indexed).length;
+  const unavailableCount = repositories.filter((repo) => repo.blocked === true).length;
 
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
@@ -288,40 +305,59 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
 
       <section style={styles.card}>
         <h3 style={styles.h3}>Status</h3>
-        {readinessLoading ? (
+        {readinessLoading || (overviewLoading && !overview) ? (
           <p style={styles.muted}>Checking…</p>
         ) : readinessError ? (
-          <p style={styles.bad}>Could not check: {readinessError.message}</p>
+          <p style={styles.bad}>Could not check: {sanitizeErrorMessage(readinessError)}</p>
         ) : readiness ? (
           <ul style={styles.list}>
             <StatusLine
               ok={readiness.enabled}
               good="CodeGraph is enabled for this company"
-              bad="CodeGraph is disabled — turn it on in the Configuration tab above"
+              bad="CodeGraph is disabled — turn it on under Configuration below"
             />
             <StatusLine
               ok={readiness.codegraph.ok}
               good={`CodeGraph ${readiness.codegraph.version ?? ""} found`}
               bad={readiness.codegraph.detail}
             />
+            {/*
+              The repository line reports what this org actually has, from the
+              same read the Repositories section below uses. It previously
+              reported the governance *binding*, which is empty on an org that is
+              working fine — so it claimed no repository existed above a list of
+              one.
+            */}
             <StatusLine
-              ok={readiness.repository.indexed}
-              good={`Repository "${readiness.repository.alias ?? ""}" is indexed`}
+              ok={repositories.length > 0 && indexedCount > 0}
+              good={
+                repositories.length === 1
+                  ? `1 repository, ${indexedCount === 1 ? "indexed" : "not indexed yet"}`
+                  : `${repositories.length} repositories, ${indexedCount} indexed`
+              }
               bad={
-                readiness.repository.configured
-                  ? `Repository "${readiness.repository.alias ?? ""}" is not indexed yet — enable "Build the index automatically" above, or use Index now below`
-                  : "No repository yet. One appears once an agent runs in a Paperclip project."
+                repositories.length === 0
+                  ? "No repository yet. One appears once a project in this organization has a repository workspace."
+                  : `${repositories.length} repositor${repositories.length === 1 ? "y" : "ies"}, none indexed yet — use Index now below`
               }
             />
-            {readiness.folder.required ? (
+            {unavailableCount > 0 ? (
               <StatusLine
-                ok={readiness.folder.configured}
-                good={`Repositories directory: ${readiness.folder.alias ?? ""}`}
-                bad='A repository is configured by relative path but no "Repositories directory" is set'
+                ok={false}
+                good=""
+                bad={`${unavailableCount} repositor${unavailableCount === 1 ? "y is" : "ies are"} switched off for this organization`}
               />
             ) : null}
           </ul>
         ) : null}
+        <div style={styles.row}>
+          <button style={styles.iconButton} onClick={refresh}>
+            Refresh
+          </button>
+          <span style={styles.hintInline}>
+            Re-reads repositories, agents and index state. Also happens when you return to this tab.
+          </span>
+        </div>
       </section>
 
       <section style={styles.card}>
@@ -342,9 +378,24 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
       </section>
 
       <Configuration companyId={companyId} onMessage={setMessage} />
-      <RepositoryAccess companyId={companyId} onMessage={setMessage} />
-      <Indexing companyId={companyId} onMessage={setMessage} />
-      <AgentExceptions companyId={companyId} onMessage={setMessage} />
+      <RepositoryAccess
+        companyId={companyId}
+        onMessage={setMessage}
+        revision={revision}
+        onChanged={refresh}
+      />
+      <Indexing
+        companyId={companyId}
+        onMessage={setMessage}
+        revision={revision}
+        onChanged={refresh}
+      />
+      <AgentExceptions
+        companyId={companyId}
+        onMessage={setMessage}
+        revision={revision}
+        onChanged={refresh}
+      />
 
       {message ? (
         <p style={message.kind === "ok" ? styles.good : styles.bad}>{message.text}</p>
@@ -607,11 +658,20 @@ function boundsSummary(draft: OperatorConfig): string {
 function Indexing({
   companyId,
   onMessage,
+  revision,
+  onChanged,
 }: {
   companyId: string;
   onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
+  /** Bumped when the page wants a re-read, e.g. on returning to the tab. */
+  revision: number;
+  /** Bump to make the whole page re-read after a change. */
+  onChanged: () => void;
 }) {
-  const { data: repos, loading } = usePluginData<{ repositories: RepoRow[] }>(DATA_KEYS.repositories);
+  const { data: repos, loading, refresh } = usePluginData<{ repositories: RepoRow[] }>(
+    DATA_KEYS.repositories,
+    { companyId, revision },
+  );
   const indexNow = usePluginAction(ACTION_KEYS.indexNow);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -621,11 +681,15 @@ function Indexing({
       onMessage(null);
       try {
         await indexNow({ companyId, projectId, reindex });
+        // The counts and the index state are wrong the instant this returns, so
+        // re-read rather than telling the operator to reopen the page.
+        refresh();
+        onChanged();
         onMessage({
           kind: "ok",
           text: reindex
-            ? "Rebuild started. Reopen this page to see it finish."
-            : "Indexed.",
+            ? "Rebuild finished. Counts below are updated."
+            : "Indexed. Counts below are updated.",
         });
       } catch (error) {
         onMessage({ kind: "error", text: sanitizeErrorMessage(error) });
@@ -633,7 +697,7 @@ function Indexing({
         setBusy(null);
       }
     },
-    [companyId, indexNow, onMessage],
+    [companyId, indexNow, onChanged, onMessage, refresh],
   );
 
   const repositories = repos?.repositories ?? [];
@@ -701,16 +765,22 @@ function Indexing({
 function RepositoryAccess({
   companyId,
   onMessage,
+  revision,
+  onChanged,
 }: {
   companyId: string;
   onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
+  /** Bumped when the page wants a re-read, e.g. on returning to the tab. */
+  revision: number;
+  /** Bump to make the whole page re-read after a change. */
+  onChanged: () => void;
 }) {
   const { data, loading, refresh } = usePluginData<{
     organization?: string | null;
     repositories: RepoRow[];
     skippedProjects?: number;
     detail?: string;
-  }>(DATA_KEYS.graphProjects, { companyId });
+  }>(DATA_KEYS.graphProjects, { companyId, revision });
   const setRepositoryAccess = usePluginAction(ACTION_KEYS.setRepositoryAccess);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -722,8 +792,9 @@ function RepositoryAccess({
       onMessage(null);
       try {
         await setRepositoryAccess({ companyId, projectId, blocked });
-        // Re-requests the data from the worker. Returns void, so nothing to await.
+        // Re-read here for this section, and tell the page so Status agrees.
         refresh();
+        onChanged();
         onMessage({
           kind: "ok",
           text: blocked
@@ -736,7 +807,7 @@ function RepositoryAccess({
         setBusy(null);
       }
     },
-    [companyId, onMessage, refresh, setRepositoryAccess],
+    [companyId, onChanged, onMessage, refresh, setRepositoryAccess],
   );
 
   const skipped = data?.skippedProjects ?? 0;
@@ -809,13 +880,25 @@ function RepositoryAccess({
 function AgentExceptions({
   companyId,
   onMessage,
+  revision,
+  onChanged,
 }: {
   companyId: string;
   onMessage: (message: { kind: "ok" | "error"; text: string } | null) => void;
+  /** Bumped when the page wants a re-read, e.g. on returning to the tab. */
+  revision: number;
+  /** Bump to make the whole page re-read after a change. */
+  onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const { data: access } = usePluginData<{ agents: AgentRow[]; toolCount: number }>(DATA_KEYS.access);
-  const { data: agents } = usePluginData<{ agents: AgentRow[] }>(DATA_KEYS.agents);
+  const { data: access, refresh: refreshAccess } = usePluginData<{
+    agents: AgentRow[];
+    toolCount: number;
+  }>(DATA_KEYS.access, { companyId, revision });
+  const { data: agents } = usePluginData<{ agents: AgentRow[] }>(DATA_KEYS.agents, {
+    companyId,
+    revision,
+  });
   const setAgentAccess = usePluginAction(ACTION_KEYS.setAgentAccess);
 
   const rows = access?.agents ?? agents?.agents ?? [];
@@ -829,6 +912,7 @@ function AgentExceptions({
       onMessage(null);
       try {
         await setAgentAccess({ companyId, agentId, enabled });
+        refreshAccess();
         onMessage({
           kind: "ok",
           text: enabled ? "Access restored for that agent." : "Access revoked for that agent.",
@@ -839,7 +923,7 @@ function AgentExceptions({
         setBusy(null);
       }
     },
-    [companyId, onMessage, setAgentAccess],
+    [companyId, onMessage, refreshAccess, setAgentAccess],
   );
 
   return (
