@@ -17,17 +17,16 @@
  * `settingsPage`; a nav column is for going places.
  */
 
-import { usePluginData, useHostNavigation, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
+import { usePluginData, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 
 import { StatusLine, styles } from "./chrome.js";
 import { sidebarStatus } from "./sidebar-status.js";
 import { ACTION_KEYS, DATA_KEYS } from "../plugin-keys.js";
 
 export function CodeGraphSidebar({ context }: PluginSidebarProps) {
-  const navigation = useHostNavigation();
   const companyId = context.companyId;
 
-  // The same read the settings page uses, so the nav badge and the page can never
+  // The same read the settings page uses, so the nav badge and settings can never
   // disagree about whether this organisation has a repository. The `readiness`
   // handler is deliberately not used here: it reports the governance *binding*,
   // which is empty on an organisation that is working fine.
@@ -40,17 +39,15 @@ export function CodeGraphSidebar({ context }: PluginSidebarProps) {
     data ? { enabled: data.enabled !== false, repositories: data.repositories } : null,
   );
 
-  // Outside a company there is no `/codegraph` route to link to, so the entry
-  // says so rather than offering a dead link.
   if (!companyId) {
     return <p style={styles.muted}>CodeGraph is configured per organization.</p>;
   }
 
   return (
     <div style={styles.sidebarWrap}>
-      <a {...navigation.linkProps("/codegraph")} style={styles.sidebarLink}>
+      <div style={styles.sidebarRow}>
         <span aria-hidden style={styles.sidebarGlyph}>
-          {/* Two callers above, one callee below: the shape the page draws. */}
+          {/* Two callers above, one callee below: the shape of a call graph. */}
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
             <path d="M7 4.5 V9" stroke="currentColor" strokeWidth="1.2" />
             <path d="M3 2.8 C 3 4.2, 6.4 3.9, 7 4.5" stroke="currentColor" strokeWidth="1.2" />
@@ -68,7 +65,7 @@ export function CodeGraphSidebar({ context }: PluginSidebarProps) {
             aria-label={status.title}
           />
         )}
-      </a>
+      </div>
 
       {/*
         One line of state, not a control panel. A nav column has room for a

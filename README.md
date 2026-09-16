@@ -27,8 +27,7 @@ Company B ──┘                          └── repo B  (.codegraph index
   - [Governance profiles](#governance-profiles)
 - [Multi-org governance examples](#multi-org-governance-examples)
 - [Tools exposed](#tools-exposed)
-- [The three surfaces](#the-three-surfaces)
-- [The CodeGraph page](#the-codegraph-page)
+- [Where it appears in Paperclip](#where-it-appears-in-paperclip)
 - [Why `projectPath` is not exposed](#why-projectpath-is-not-exposed)
 - [Choosing between the two integration paths](#choosing-between-the-two-integration-paths)
 - [Verifying an install](#verifying-an-install)
@@ -345,117 +344,53 @@ governance-resolved set, for two reasons: leaving it unset would advertise one
 tool, and setting it means **CodeGraph itself refuses a tool this scope may not
 call**. Enforcement therefore does not rest on this plugin's code alone.
 
-## The three surfaces
+## Where it appears in Paperclip
 
-Agents get the eight tools. Humans get three places to look, each chosen to match
-how Paperclip mounts plugin UI — the host renders a `sidebar` slot inside its nav
-column (`ui/src/components/Sidebar.tsx`), a `settingsPage` slot inside Settings →
-Plugins (`ui/src/pages/PluginSettings.tsx`), and turns a `page` slot into a route
-(`ui/src/App.tsx`). A page slot adds **no nav entry**, so without the sidebar link
-the URL would exist and nothing would point at it.
+The plugin adds **two** surfaces, and deliberately no more:
 
 | Surface | Where | What it is |
 |---|---|---|
-| **CodeGraph** | the nav column | A link to the graph page, with an index-status dot. Not a panel: a nav column is for going places. |
-| **CodeGraph** | `/:companyPrefix/codegraph` | The graph itself. |
+| **CodeGraph** | the nav column | Index state at a glance: a dot and one line when there is no index or the feature is off. |
 | **CodeGraph** | Settings → Plugins | All configuration. |
 
-### Settings → Plugins → CodeGraph
+Each matches how the host mounts plugin UI: `ui/src/components/Sidebar.tsx` renders
+a `sidebar` slot inside its nav column, and `ui/src/pages/PluginSettings.tsx` mounts
+a `settingsPage` slot inside Settings → Plugins.
 
-Everything an operator can change:
+### There is no graph page, on purpose
 
-- **Configuration** — enable, auto-install, auto-index, the CodeGraph executable,
-  and allowed repository directories.
-- **Activate** — creates the Paperclip tool profile and MCP gateway that make the
-  tools callable. Safe to run twice.
-- **Repositories** — the primary access control: which of this org's repositories
-  CodeGraph may read. Switching one off is the only edit, so it can only narrow.
-- **Indexing** — file/node counts, and **Index now** / **Rebuild**.
-- **Exceptions** — per-agent revocation, collapsed by default.
+Earlier releases shipped a hand-built reader — a three-pane Symbol view, an
+architecture Map, entry points and a dead-code list — and it was removed.
 
-#### Why access is gated by repository, not by agent
+The reason is that **CodeGraph already has that UI, and it is better.** It is under
+active development, and its own released notes add views this plugin would have
+taken months to match. A second implementation of the same reader could only fall
+behind, and every hour spent on it was an hour not spent on the part that is
+actually pluggable.
 
-An agent's reach already follows the Paperclip project it is working in. That is
-the organisational fact, and it changes when someone changes team. A per-agent
-list is a *copy* of that fact which does not update when the fact does, so access
-outlives the reason it was granted — the classic way permissions rot. A repository
-switch is derived from work the operator already did, and cannot drift. It also
-scales: one deployment here has ~77 agents and 2 repositories.
+What the plugin is for is the part Paperclip needs:
 
-The per-agent switches remain, but as **exceptions**: an explicit list for
-revoking one agent's access in cases the derived rules cannot express, such as a
-contractor whose access should not follow their project membership. They never
-grant anything — which is worth stating plainly, because these tools are
-**default-denied by Paperclip** until a tool profile allows them. The plugin does
-not grant access; it narrows access Paperclip has already granted.
+- **the eight CodeGraph tools, governed and audited** through Paperclip's own tool
+  gateway, with per-project and per-agent narrowing it cannot provide on its own;
+- **the MCP wiring** that makes those tools reachable by an agent at all;
+- **the repository resolution** — a repository is a Paperclip project's workspace,
+  never a path an agent types.
 
-| Layer | Question | Enforced by |
-|---|---|---|
-| Paperclip tool profile | may this agent call this tool at all? | Paperclip |
-| Repository switch | may this org read this repository? | this plugin |
-| Agent exception | is this one agent excluded? | this plugin |
+To **read** the graph, run `codegraph ui` on the host. It is a local, read-only
+viewer for the project you already indexed, and it needs no Paperclip wiring:
 
-#### Repositories are detected from git, not configured
+```bash
+codegraph ui -p /path/to/repo     # opens a browser on a loopback port
+```
 
-There is no repository picker and no path is ever typed: a repository is the
-workspace of a Paperclip project, resolved through the host. Two read-only git
-lookups make that identity accurate rather than approximate:
-
-- **`git rev-parse --show-toplevel`** locates the repository root, so the index is
-  read from where it actually is. For an ordinary checkout that is the workspace
-  itself; when a project points *into* a checkout — a package inside a monorepo —
-  the root is an ancestor, and looking for `<workspace>/.codegraph` would find
-  nothing and report a problem that does not exist.
-- **`git remote get-url origin`** supplies the label. A repository's identity is
-  its remote, not the directory it was checked out into: deriving `pos` from
-  `path.basename` is right only because Paperclip names the managed folder after
-  the repo, so a project pointed at a folder called `checkout-2` would be
-  labelled `checkout-2`.
-
-Both **fall back to the workspace path** on any failure — no git binary, not a
-repository, no `origin` — so every non-git deployment behaves exactly as before.
-The lookups never contact a remote (`rev-parse` and `remote get-url` read local
-config), and the plugin deliberately does **not** scan the filesystem for
-repositories: recognising what Paperclip has checked out is scoped to work the
-operator authorised, whereas walking the disk for git repositories would turn a
-code-intelligence plugin into a discovery tool for everything on the host.
-
-> **Why the page has to own the config form.** Declaring a `settingsPage` slot
-> makes the host render *your* component **instead of** its auto-generated
-> `PluginConfigForm` — it is `hasCustomSettingsPage ? <PluginSlotMount/> :
-> hasConfigSchema ? <PluginConfigForm/> : …`, an either/or. So a plugin that
-> declares one takes responsibility for the whole Configuration tab, including
-> the fields the operator already had. Omitting the config section would not have
-> hidden the form; it would have silently removed the ability to switch CodeGraph
-> on at all. Saving merges into the stored document, so a key this form does not
-> show is never dropped.
-
-## The CodeGraph page
-
-The graph is read from the same index the tools read and drawn in the browser, so
-there is no second server to run and no second copy of the code to keep in sync.
-That is a constraint, not a preference: plugin UI routes return JSON only, and
-CodeGraph's own viewer binds loopback, so the page cannot embed it.
-
-| Control | Effect |
-|---|---|
-| **Repository** | Which of this org's projects to draw. Only indexed repositories are drawn; an unindexed one says so instead of showing an empty canvas. |
-| **Find a symbol** | Name search across the repository's index. Picking a result draws its graph. |
-| **Depth** | 1–3 hops. Deeper graphs are capped at 250 symbols, and the page says when it capped. |
-| **The graph** | Callers above, callees below. Click a node for its source; double-click to re-centre on it. |
-| **Source** | A bounded, line-numbered excerpt from the working tree, with file and line range. |
-
-The layout is **layered, not force-directed**, and that is the whole design. A
-force layout scatters the same graph differently on every render and answers no
-question. Here the vertical axis is distance in the call graph, so a picture of
-the graph says something before you read a single label. Direction comes from the
-edge itself, so `calls` and `references` are both drawn without the plugin
-knowing which edge kinds exist.
-
-Nothing on the page accepts a path. The operator picks a *project*; the worker
-resolves that project's repository through the host, exactly as the tool path
-does, and the excerpt's file path comes from the index and is containment-checked
-before anything is read.
+For the record, since it shaped what is here: the adapter seam in CodeGraph's own
+UI was investigated properly, and it holds — `ui/src/lib/api.ts` is explicit that
+"a host that already holds the index installs its own" adapter, and a proof of
+concept ran their real Map view against this plugin's data with no page errors. It
+was **not** adopted, because their UI ships inside a 123 MB vendored runtime and is
+`private: true` on npm, so consuming it means a build step tracking their source on
+every update. That is a maintenance commitment this plugin does not need to take on
+to do its job.
 
 ## Why `projectPath` is not exposed
 

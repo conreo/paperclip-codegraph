@@ -99,16 +99,6 @@ describe("worker setup registration", () => {
     }
   });
 
-  it("registers the graph page's data keys", () => {
-    for (const key of [
-      DATA_KEYS.graphProjects,
-      DATA_KEYS.graphSearch,
-      DATA_KEYS.graphNeighbourhood,
-      DATA_KEYS.graphSource,
-    ]) {
-      expect(registered.data.has(key), `missing ${key}`).toBe(true);
-    }
-  });
 
   it("registers no key that is not in the registry", () => {
     // The reverse direction: a handler under an unlisted key is one the UI cannot

@@ -1182,51 +1182,6 @@ const plugin = definePlugin({
      * reports the chain the plugin actually followed, with host layout redacted
      * the same way the rest of the plugin redacts it.
      */
-    ctx.data.register(DATA_KEYS.graphDiagnose, async (params) => {
-      const companyId = asString(params?.["companyId"]);
-      const projectId = asString(params?.["projectId"]);
-      if (!companyId || !projectId) return { error: "companyId and projectId are required" };
-      try {
-        const { config: scoped } = await loadConfig(ctx, companyId);
-        const roots = containmentRoots(scoped, await repositoryRoot(ctx, companyId));
-
-        const workspace = await ctx.projects.getPrimaryWorkspace(projectId, companyId);
-        const accepted = acceptWorkspacePath(workspace?.path, roots);
-        if (!accepted) {
-          return {
-            projectId,
-            workspaceAccepted: false,
-            reason:
-              "The host returned no workspace path for this project, or it failed containment.",
-            containmentRootCount: roots.length,
-          };
-        }
-
-        const { root, identity } = await repositoryIdentity(accepted);
-        const indexed = await isIndexed(root);
-
-        return {
-          projectId,
-          workspaceAccepted: true,
-          // `path.basename`, not `redactPath`: the latter produces an audit *key*
-          // (two trailing segments plus a hash), which for a managed workspace
-          // emits the project UUID. A diagnostic must not disclose more than the
-          // alias the operator already sees.
-          workspaceAlias: path.basename(accepted),
-          repoUrl: workspace?.repoUrl ?? null,
-          gitRootAlias: path.basename(root),
-          gitRootIsWorkspace: root === accepted,
-          repositoryName: identity.name,
-          indexed,
-          indexPathAlias: `${path.basename(root)}/${CODEGRAPH_INDEX_DIR}`,
-          hasGitEntry: await isGitRepository(root),
-          containmentRootCount: roots.length,
-          gitAvailable: (await gitIdentityRunner()) !== null,
-        };
-      } catch (error) {
-        return graphFailure(error);
-      }
-    });
 
     /**
      * The three panes of the reader: who calls this symbol, and what it calls.
@@ -1241,51 +1196,6 @@ const plugin = definePlugin({
      * hundreds of callers, and none of them are useful past the first screenful.
      * The counts are reported alongside so the client can say what it left out.
      */
-    ctx.data.register(DATA_KEYS.graphReader, async (params) => {
-      const companyId = asString(params?.["companyId"]);
-      const nodeId = asString(params?.["nodeId"]);
-      if (!companyId || !nodeId) return { error: "companyId and nodeId are required" };
-
-      const limit = MAX_READER_EDGES;
-      try {
-        const projectPath = await repositoryForProject(companyId, asString(params?.["projectId"]));
-        const seed = nodeById(projectPath, nodeId);
-        if (!seed) {
-          return { error: "That symbol is not in the current index.", reason: "not_indexed" };
-        }
-
-        const resolve = (edge: { source: string; target: string; kind: string; line: number | null }, direction: "in" | "out") => {
-          const otherId = direction === "in" ? edge.source : edge.target;
-          const node = nodeById(projectPath, otherId);
-          return {
-            id: otherId,
-            name: node?.name ?? "(unknown symbol)",
-            qualifiedName: node?.qualifiedName ?? "",
-            kind: node?.kind ?? "",
-            filePath: node?.filePath ?? "",
-            startLine: node?.startLine ?? null,
-            endLine: node?.endLine ?? null,
-            /** The line in the caller/callee's own file that makes the call. */
-            callLine: edge.line,
-            edgeKind: edge.kind,
-          };
-        };
-
-        const callerEdges = callersOf(projectPath, nodeId);
-        const calleeEdges = calleesOf(projectPath, nodeId);
-
-        return {
-          seed,
-          callers: callerEdges.slice(0, limit).map((edge) => resolve(edge, "in")),
-          callees: calleeEdges.slice(0, limit).map((edge) => resolve(edge, "out")),
-          callerCount: callerEdges.length,
-          calleeCount: calleeEdges.length,
-          truncated: callerEdges.length > limit || calleeEdges.length > limit,
-        };
-      } catch (error) {
-        return graphFailure(error);
-      }
-    });
 
     /**
      * The architecture map: modules, what references what, and where the cycles are.
@@ -1299,53 +1209,6 @@ const plugin = definePlugin({
      * map needs *all* edges between files to count references across module
      * boundaries; no single CodeGraph tool exposes that aggregate.
      */
-    ctx.data.register(DATA_KEYS.graphMap, async (params) => {
-      const companyId = asString(params?.["companyId"]);
-      if (!companyId) return { error: "companyId is required" };
-
-      const root = asString(params?.["root"]);
-      const requestedDepth = params?.["depth"];
-      const depthIsAutomatic =
-        typeof requestedDepth !== "number" || !Number.isFinite(requestedDepth);
-
-      try {
-        const projectPath = await repositoryForProject(companyId, asString(params?.["projectId"]));
-        const dbPath = path.join(projectPath, CODEGRAPH_INDEX_DIR, "codegraph.db");
-        const db = new DatabaseSync(dbPath, { readOnly: true });
-        let files: IndexedFile[];
-        let edges: IndexedEdge[];
-        try {
-          const fileRows = db.prepare(MAP_FILE_QUERY).all() as Array<Record<string, unknown>>;
-          files = fileRows.map((row) => ({
-            filePath: String(row["file_path"] ?? ""),
-            fileKind: null,
-            nodes: Number(row["nodes"] ?? 0),
-          }));
-
-          const edgeRows = db
-            .prepare(MAP_EDGE_QUERY)
-            .all(MAX_MAP_EDGES) as Array<Record<string, unknown>>;
-          edges = edgeRows.map((row) => ({
-            sourceFile: row["source_file"] === null ? null : String(row["source_file"]),
-            targetFile: row["target_file"] === null ? null : String(row["target_file"]),
-            kind: String(row["kind"] ?? ""),
-          }));
-        } finally {
-          db.close();
-        }
-
-        const map = buildRepoMap(files, edges, {
-          root: root ?? null,
-          depth: depthIsAutomatic ? null : Number(requestedDepth),
-          maxModules: MAX_MAP_MODULES,
-          maxDepth: MAX_MAP_DEPTH,
-        });
-
-        return { ...map, requestedRoot: root ?? "" };
-      } catch (error) {
-        return graphFailure(error);
-      }
-    });
 
     /**
      * Entry points: the HTTP routes the index found, with their handlers.
@@ -1356,65 +1219,6 @@ const plugin = definePlugin({
      * framework and CI detection on top; what is here is the part the index
      * actually records.
      */
-    ctx.data.register(DATA_KEYS.graphEntryPoints, async (params) => {
-      const companyId = asString(params?.["companyId"]);
-      if (!companyId) return { error: "companyId is required" };
-      try {
-        const projectPath = await repositoryForProject(companyId, asString(params?.["projectId"]));
-        const db = new DatabaseSync(path.join(projectPath, CODEGRAPH_INDEX_DIR, "codegraph.db"), {
-          readOnly: true,
-        });
-        let routes: RouteEntry[];
-        try {
-          const rows = db
-            .prepare(
-              `SELECT id, name, file_path, start_line FROM nodes
-                WHERE kind = 'route' AND file_path IS NOT NULL
-                ORDER BY file_path ASC, start_line ASC`,
-            )
-            .all() as Array<Record<string, unknown>>;
-
-          const handlerStmt = db.prepare(
-            `SELECT n2.id, n2.name, n2.file_path, n2.start_line
-               FROM edges e JOIN nodes n2 ON n2.id = e.target
-              WHERE e.source = ? AND e.kind = 'calls'
-              LIMIT 1`,
-          );
-
-          routes = rows.map((row) => {
-            const id = String(row["id"]);
-            const { method, path: routePath } = parseRoute(String(row["name"] ?? ""));
-            const handler = handlerStmt.all(id) as Array<Record<string, unknown>>;
-            const first = handler[0];
-            return {
-              id,
-              method,
-              path: routePath,
-              filePath: String(row["file_path"] ?? ""),
-              line: typeof row["start_line"] === "number" ? row["start_line"] : null,
-              handler: first ? String(first["name"] ?? "") : null,
-              handlerFile: first ? String(first["file_path"] ?? "") : null,
-              handlerLine:
-                first && typeof first["start_line"] === "number" ? first["start_line"] : null,
-              handlerId: first ? String(first["id"]) : null,
-            };
-          });
-        } finally {
-          db.close();
-        }
-
-        const grouped = groupRoutes(routes);
-        return {
-          routes: grouped.entries.slice(0, MAX_ENTRY_POINTS),
-          total: grouped.entries.length,
-          withHandler: grouped.withHandler,
-          withoutHandler: grouped.withoutHandler,
-          truncated: grouped.entries.length > MAX_ENTRY_POINTS,
-        };
-      } catch (error) {
-        return graphFailure(error);
-      }
-    });
 
     /**
      * Symbols nothing references.
@@ -1425,153 +1229,10 @@ const plugin = definePlugin({
      * mentioned-elsewhere names cannot be reproduced here. What is excluded, and
      * why, is returned alongside the list.
      */
-    ctx.data.register(DATA_KEYS.graphDeadCode, async (params) => {
-      const companyId = asString(params?.["companyId"]);
-      if (!companyId) return { error: "companyId is required" };
-      try {
-        const projectPath = await repositoryForProject(companyId, asString(params?.["projectId"]));
-        const db = new DatabaseSync(path.join(projectPath, CODEGRAPH_INDEX_DIR, "codegraph.db"), {
-          readOnly: true,
-        });
-        let symbols: DeadCandidate[];
-        let referenced: Set<string>;
-        let entryPoints: Set<string>;
-        let unreachableFiles: Set<string>;
-        try {
-          const symbolRows = db
-            .prepare(
-              `SELECT id, name, qualified_name, kind, file_path, start_line, end_line
-                 FROM nodes
-                WHERE kind IN ('function','method','class','component','interface','type_alias','constant')
-                  AND file_path IS NOT NULL AND file_path <> ''
-                LIMIT ?`,
-            )
-            .all(MAX_DEAD_SCAN) as Array<Record<string, unknown>>;
-
-          symbols = symbolRows.map((row) => ({
-            id: String(row["id"]),
-            name: String(row["name"] ?? ""),
-            qualifiedName: String(row["qualified_name"] ?? ""),
-            kind: String(row["kind"] ?? ""),
-            filePath: String(row["file_path"] ?? ""),
-            startLine: typeof row["start_line"] === "number" ? row["start_line"] : null,
-            endLine: typeof row["end_line"] === "number" ? row["end_line"] : null,
-          }));
-
-          // Only genuine reference kinds. `contains` is the file→symbol parent
-          // relation, present for every symbol, and counting it made this view
-          // incapable of finding anything.
-          const placeholders = REFERENCE_EDGE_KINDS.map(() => "?").join(", ");
-          referenced = new Set(
-            (db
-              .prepare(
-                `SELECT DISTINCT target FROM edges WHERE target IS NOT NULL AND kind IN (${placeholders})`,
-              )
-              .all(...REFERENCE_EDGE_KINDS) as Array<Record<string, unknown>>).map((row) =>
-              String(row["target"]),
-            ),
-          );
-          entryPoints = new Set(
-            (db.prepare("SELECT DISTINCT source FROM edges WHERE kind = 'calls' AND source LIKE 'route:%'").all() as Array<
-              Record<string, unknown>
-            >).map((row) => String(row["source"])),
-          );
-          // A file nothing reaches is a different fact from an unused symbol, and
-          // is reported separately rather than mixed into the list.
-          unreachableFiles = new Set(
-            (db.prepare("SELECT id FROM nodes WHERE kind = 'file' AND id NOT IN (SELECT DISTINCT target FROM edges)").all() as Array<
-              Record<string, unknown>
-            >).map((row) => String(row["id"]).replace(/^file:/, "")),
-          );
-        } finally {
-          db.close();
-        }
-
-        const report = findUnreferenced(symbols, {
-          referenced,
-          entryPoints,
-          unreachableFiles,
-          limit: MAX_DEAD_CANDIDATES,
-        });
-
-        return {
-          ...report,
-          scanned: symbols.length,
-          // Stated here as well as in the UI, so an API caller cannot read the
-          // list without the caveat.
-          caveat:
-            "Unreferenced is a hint, not a verdict: this plugin has no export analysis, so a symbol exported for another module to import can appear here.",
-        };
-      } catch (error) {
-        return graphFailure(error);
-      }
-    });
 
     /** Symbol search in one of this org's repositories. */
-    ctx.data.register(DATA_KEYS.graphSearch, async (params) => {
-      const companyId = asString(params?.["companyId"]);
-      const query = asString(params?.["query"]);
-      if (!companyId || !query) return { results: [] };
-      try {
-        const projectPath = await repositoryForProject(
-          companyId,
-          asString(params?.["projectId"]),
-        );
-        return { results: searchNodes(projectPath, query) };
-      } catch (error) {
-        return graphFailure(error);
-      }
-    });
 
     /** The call neighbourhood around one symbol, for the graph view. */
-    ctx.data.register(DATA_KEYS.graphNeighbourhood, async (params) => {
-      const companyId = asString(params?.["companyId"]);
-      const nodeId = asString(params?.["nodeId"]);
-      if (!companyId || !nodeId) return { error: "companyId and nodeId are required" };
-      const depthRaw = params?.["depth"];
-      const depth = typeof depthRaw === "number" && Number.isFinite(depthRaw) ? depthRaw : 1;
-      try {
-        const projectPath = await repositoryForProject(
-          companyId,
-          asString(params?.["projectId"]),
-        );
-        // Both shapes in one response: the graph carries the whole neighbourhood
-        // as nodes and edges, for a diagram, and `callers`/`callees` carry the
-        // one-hop sides with resolved names and call lines, which is what a
-        // caller/callee view draws. No UI calls this today — the Map tab became an
-        // architecture map — so it is documented in KEYS_WITHOUT_UI_CALLER and
-        // reachable by curl, rather than deleted because a page moved on.
-        const oneHop = (edges: GraphEdge[], direction: "in" | "out") =>
-          edges.slice(0, MAX_READER_EDGES).map((edge) => {
-            const otherId = direction === "in" ? edge.source : edge.target;
-            const node = nodeById(projectPath, otherId);
-            return {
-              id: otherId,
-              name: node?.name ?? "(unknown symbol)",
-              qualifiedName: node?.qualifiedName ?? "",
-              kind: node?.kind ?? "",
-              filePath: node?.filePath ?? "",
-              startLine: node?.startLine ?? null,
-              endLine: node?.endLine ?? null,
-              callLine: edge.line,
-              edgeKind: edge.kind,
-            };
-          });
-
-        return {
-          graph: neighbourhood(projectPath, nodeId, depth),
-          // The seed is echoed back so the view can mark the centre of the graph
-          // without re-deriving it from the traversal order.
-          seedId: nodeId,
-          depth,
-          seed: nodeById(projectPath, nodeId),
-          callers: oneHop(callersOf(projectPath, nodeId), "in"),
-          callees: oneHop(calleesOf(projectPath, nodeId), "out"),
-        };
-      } catch (error) {
-        return graphFailure(error);
-      }
-    });
 
     /**
      * A short source excerpt for one node, so the graph view can show the code
@@ -1581,39 +1242,6 @@ const plugin = definePlugin({
      * containment before anything is read; only a capped excerpt is returned,
      * and it is line-numbered so the excerpt is self-describing.
      */
-    ctx.data.register(DATA_KEYS.graphSource, async (params) => {
-      const companyId = asString(params?.["companyId"]);
-      const nodeId = asString(params?.["nodeId"]);
-      if (!companyId || !nodeId) return { excerpt: null };
-      try {
-        const projectPath = await repositoryForProject(companyId, asString(params?.["projectId"]));
-        const { config: scoped } = await loadConfig(ctx, companyId);
-        const roots = containmentRoots(scoped, await repositoryRoot(ctx, companyId));
-
-        const node = nodeById(projectPath, nodeId);
-        if (!node) return { excerpt: null, reason: "That symbol is not in the current index." };
-
-        const absolute = resolveProjectPath(path.join(projectPath, node.filePath), {
-          allowedProjectRoots: roots.length > 0 ? roots : [projectPath],
-        });
-
-        const excerpt = await readExcerpt(absolute, node.startLine, node.endLine, {
-          maxLines: MAX_SOURCE_LINES,
-          maxBytes: MAX_SOURCE_BYTES,
-        });
-
-        return {
-          excerpt: excerpt.text,
-          filePath: node.filePath,
-          startLine: excerpt.firstLine,
-          endLine: excerpt.lastLine,
-          truncated: excerpt.truncated,
-          node,
-        };
-      } catch (error) {
-        return graphFailure(error);
-      }
-    });
 
     /**
      * Who may use CodeGraph.

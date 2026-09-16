@@ -17,9 +17,6 @@ describe("manifest — UI slots", () => {
     settingsPage: "instance.settings.register",
     sidebar: "ui.sidebar.register",
     page: "ui.page.register",
-    // The host's own map (`plugin-capability-validator.ts:172`) pairs the route
-    // sidebar with the ordinary sidebar capability.
-    routeSidebar: "ui.sidebar.register",
   };
 
   it("declares the capability each slot requires", () => {
@@ -64,24 +61,6 @@ describe("manifest — UI slots", () => {
     }
   });
 
-  it("pairs its route sidebar with its page, which is what removes the host's Back button", () => {
-    // `PluginPage.tsx` draws `{!routeSidebarActive && <Back>}`, and the host only
-    // treats the route as taken over when `resolveRouteSidebarSlot` finds a
-    // routeSidebar whose routePath matches the page slot's, in the same plugin.
-    // Losing this pairing silently brings the Back button back.
-    const slots = manifest.ui?.slots ?? [];
-    const page = slots.find((slot) => slot.type === "page");
-    const rails = slots.filter((slot) => slot.type === "routeSidebar");
-    expect(page?.routePath).toBeDefined();
-    expect(rails).toHaveLength(1);
-    expect(rails[0]!.routePath).toBe(page!.routePath);
-  });
-
-  it("exposes the graph page the UI bundle actually exports", () => {
-    const page = (manifest.ui?.slots ?? []).find((slot) => slot.type === "page");
-    expect(page).toBeDefined();
-    expect(page!.exportName).toBe("CodeGraphPage");
-  });
 });
 
 describe("manifest", () => {

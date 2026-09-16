@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import {
   MODULE_HEIGHT,
@@ -625,13 +623,4 @@ describe("REFERENCE_EDGE_KINDS — the rule that this view depends on", () => {
     }
   });
 
-  it("is accompanied by a query that filters on it", () => {
-    // A constant nobody uses is a comment. The worker must actually filter.
-    const worker = readFileSync(
-      join(process.cwd(), "src", "worker.ts"),
-      "utf8",
-    );
-    expect(worker).toContain("REFERENCE_EDGE_KINDS");
-    expect(worker).toMatch(/kind IN \(\$\{placeholders\}\)/);
-  });
 });

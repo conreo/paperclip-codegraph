@@ -56,10 +56,6 @@ const manifest: PaperclipPluginManifestV1 = {
     "instance.settings.register",
     // The sidebar entry below.
     "ui.sidebar.register",
-    // The full-page graph view below. A page is its own company-scoped route
-    // (`/:companyPrefix/codegraph`), which a sidebar slot cannot provide: the
-    // sidebar is a narrow column and a call graph needs the width.
-    "ui.page.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -80,26 +76,6 @@ const manifest: PaperclipPluginManifestV1 = {
         id: "codegraph-sidebar",
         displayName: "CodeGraph",
         exportName: "CodeGraphSidebar",
-      },
-      {
-        // The graph itself. A call graph is wide and tall at once, so it gets a
-        // page of its own rather than a panel: `/…/codegraph`.
-        type: "page",
-        id: "codegraph-page",
-        displayName: "CodeGraph",
-        exportName: "CodeGraphPage",
-        routePath: "codegraph",
-      },
-      {
-        // The view rail beside that page, and — because a `routeSidebar` slot
-        // matching the page's `routePath` is what the host checks before drawing
-        // its own Back button — the reason no Back button appears on this page.
-        // Requires `ui.sidebar.register`, which is why that capability is above.
-        type: "routeSidebar",
-        id: "codegraph-route-sidebar",
-        displayName: "CodeGraph views",
-        exportName: "CodeGraphRouteSidebar",
-        routePath: "codegraph",
       },
     ],
   },

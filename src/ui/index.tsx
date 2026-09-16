@@ -8,17 +8,17 @@
  * than closures inside a component.
  *
  *   SettingsPage      → Settings → Plugins → CodeGraph   (all configuration)
- *   CodeGraphSidebar  → the nav column                   (a link to the page)
- *   CodeGraphPage     → /:companyPrefix/codegraph        (the graph itself)
+ *   CodeGraphSidebar  → the nav column                   (index state)
  *
- * The split is deliberate and follows the host's own model:
- * `ui/src/pages/PluginSettings.tsx` mounts `settingsPage` inside Settings →
- * Plugins, `ui/src/components/Sidebar.tsx` renders `sidebar` inside the nav, and
- * `ui/src/App.tsx` turns a `page` slot's `routePath` into a route. Configuration
- * belongs in the first; the second exists so the third is reachable.
+ * The split follows the host's own model: `ui/src/pages/PluginSettings.tsx` mounts
+ * `settingsPage` inside Settings → Plugins, and `ui/src/components/Sidebar.tsx`
+ * renders `sidebar` inside the nav column.
+ *
+ * There is deliberately no `page` slot. A hand-built reader lived here for several
+ * releases and was removed: CodeGraph's own UI is better, changes often, and a
+ * second implementation of it could only fall behind. The tools and the governed
+ * MCP path are the plugin's job; reading the graph is CodeGraph's.
  */
 
 export { SettingsPage } from "./admin.js";
 export { CodeGraphSidebar } from "./sidebar.js";
-export { CodeGraphRouteSidebar } from "./route-sidebar.js";
-export { CodeGraphPage } from "./page.js";

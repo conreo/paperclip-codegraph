@@ -150,6 +150,20 @@ export const styles: Record<string, CSSProperties> = {
   // Same rhythm, same inset pill, same hover — otherwise the row reads as a
   // foreign object in the list, which is exactly what it looked like.
   sidebarWrap: { display: "flex", flexDirection: "column", gap: 0 },
+  /** The same row rhythm as `sidebarLink`, for a row that is not a link. */
+  sidebarRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    margin: "0 8px",
+    borderRadius: 8,
+    padding: "6px 8px",
+    color: "var(--foreground)",
+    opacity: 0.8,
+    fontSize: "var(--text-compact, 13px)",
+    fontWeight: 500,
+    lineHeight: 1.35,
+  },
   sidebarLink: {
     display: "flex",
     alignItems: "center",
