@@ -90,6 +90,25 @@ describe("the copy says what happens", () => {
     expect(ADMIN).toContain("restart that agent");
   });
 
+  it("names the cause that is actually blocking, not the adapter by default", () => {
+    // Two states get confused: the plugin being off, and the adapter not being
+    // wired. Naming the adapter when the plugin is off sends the operator to the
+    // wrong settings page — and off is the state a fresh organization is in.
+    const delivery = ADMIN.slice(ADMIN.indexOf("CodeGraph is off for this organization"));
+    expect(delivery).toBeTruthy();
+    // The off-state note comes first in the conditional chain, before the wiring
+    // warning, so it wins when both are true.
+    const offAt = ADMIN.indexOf("CodeGraph is off for this organization");
+    const wiringAt = ADMIN.indexOf("cannot receive these tools yet");
+    expect(offAt).toBeGreaterThan(-1);
+    expect(offAt).toBeLessThan(wiringAt);
+  });
+
+  it("does not claim agents are the problem when they are switched off", () => {
+    // Revoked agents are a choice, not a gap, so they are excluded from the count.
+    expect(ADMIN).toContain("agent.enabled !== false && agent.mcpClientLoaded");
+  });
+
   it("describes the directory limit as a limit, not a list", () => {
     // The field nobody could read: it is not a list of repositories.
     expect(ADMIN).toContain("A limit, not a list");

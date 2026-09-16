@@ -202,7 +202,13 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
         onMessage={notify}
       />
       <Indexing companyId={companyId} revision={revision} onChanged={refresh} onMessage={notify} />
-      <Exceptions companyId={companyId} revision={revision} onChanged={refresh} onMessage={notify} />
+      <Exceptions
+        companyId={companyId}
+        revision={revision}
+        onChanged={refresh}
+        onMessage={notify}
+        enabled={readiness?.enabled === true}
+      />
     </div>
   );
 }
@@ -837,11 +843,14 @@ function Exceptions({
   revision,
   onChanged,
   onMessage,
+  enabled,
 }: {
   companyId: string;
   revision: number;
   onChanged: () => void;
   onMessage: Notify;
+  /** Whether the plugin is on for this organization at all. */
+  enabled: boolean;
 }) {
   const { data: access, refresh: refreshAccess } = usePluginData<{ agents: AgentRow[] }>(
     DATA_KEYS.access,
@@ -905,14 +914,27 @@ function Exceptions({
         </p>
       ) : null}
 
-      {noClient + noConfig > 0 ? (
+      {!enabled ? (
+        /*
+         * Two states get confused, and naming the wrong one sends the operator to
+         * the wrong place. When the plugin is off, no agent receives anything
+         * whatever its adapter says — so the adapter is not the problem and must
+         * not be described as one. This is the state a fresh organization is in.
+         */
+        <p style={styles.note}>
+          CodeGraph is off for this organization, so no agent receives these tools yet whatever
+          its adapter is set to. Switch it on at the top of this page, and this section will
+          say whether anything else is still missing.
+        </p>
+      ) : noClient + noConfig > 0 ? (
         <div style={styles.banner}>
           <strong>
             {noClient + noConfig} of {rows.length} agents cannot receive these tools yet.
           </strong>
           <p style={styles.bannerBody}>
-            An active profile only makes the tools <em>allowed</em>. An agent also needs an MCP
-            client pointed at this organization&apos;s MCP config before the tools can reach it.
+            CodeGraph is on, and an active profile makes these tools <em>allowed</em> — but an
+            agent also needs an MCP client pointed at this organization&apos;s MCP config before
+            the tools can reach it.
             {noClient > 0 ? ` ${noClient} load no MCP client at all.` : ""}
             {noConfig > 0 ? ` ${noConfig} load one but never pass --mcp-config.` : ""}
           </p>
