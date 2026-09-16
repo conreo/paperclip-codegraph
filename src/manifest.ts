@@ -29,12 +29,14 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: [
     // Registering the CodeGraph tool surface for agents.
     "agent.tools.register",
-    // Reading the Paperclip objects a scope is keyed on, to validate that a
-    // company/project/agent id from a run context is real before trusting it.
-    "companies.read",
-    "projects.read",
-    // The repository an agent is allowed to read is derived from the Paperclip
-    // project it is working in, rather than typed into plugin config.
+    // Least privilege, verified against the host's own operation→capability map
+    // (`plugin-capability-validator.ts` / `host-client-factory.ts`):
+    //   projects.getPrimaryWorkspace → project.workspaces.read
+    //   agents.list                  → agents.read
+    //   state.get/set                → plugin.state.read/write
+    //   activity.log                 → activity.log.write
+    // `companies.read` and `projects.read` were declared and never used: the
+    // plugin reads no company and calls no `projects.list`/`projects.get`.
     "project.workspaces.read",
     "agents.read",
     // The governance document (which company may read which codebase).

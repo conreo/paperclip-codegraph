@@ -144,18 +144,19 @@ async function repositoryRoot(
   ctx: PluginContext,
   companyId: string,
 ): Promise<string | null> {
-  try {
-    const status = await ctx.localFolders.status(companyId, CODEGRAPH_FOLDER_KEY);
-    if (!status.configured) return null;
-    return status.realPath ?? status.path ?? null;
-  } catch (error) {
-    // A missing folder declaration must not break a deployment that configured
-    // absolute paths instead; fall back to those.
-    ctx.logger.warn("Could not read the configured repositories directory", {
-      detail: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
+  // Always null, and deliberately so. The `localFolders` declaration was removed
+  // in 0.5.3 because Paperclip rendered a permanent "Needs attention" badge for a
+  // folder the plugin does not require; `localFolders.status` requires the
+  // `local.folders` capability, which went with it. Calling it anyway produced a
+  // guaranteed capability denial on every readiness check.
+  //
+  // Kept as a seam rather than deleted: every call site feeds this through
+  // `bindingPathFor` and `containmentRoots`, both of which handle null, so
+  // restoring a folder root is a manifest line plus a body here — and absolute
+  // bindings and workspace-derived repositories are unaffected either way.
+  void ctx;
+  void companyId;
+  return null;
 }
 
 /**

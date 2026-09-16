@@ -27,9 +27,9 @@ describe("manifest", () => {
   it("declares every capability it actually uses", () => {
     for (const capability of [
       "agent.tools.register",
-      "companies.read",
-      "projects.read",
       // Used to derive the repository from the run's project workspace.
+      // `project.workspaces.read` is the capability the host's operation map
+      // actually requires for getPrimaryWorkspace — not `projects.read`.
       "project.workspaces.read",
       "agents.read",
       "plugin.state.read",
@@ -39,6 +39,13 @@ describe("manifest", () => {
     ]) {
       expect(manifest.capabilities).toContain(capability);
     }
+  });
+
+  it("declares no capabilities it does not use", () => {
+    // Least privilege: every capability must map to a host call the plugin makes.
+    // These two were declared and never used.
+    expect(manifest.capabilities).not.toContain("companies.read");
+    expect(manifest.capabilities).not.toContain("projects.read");
   });
 
   it("declares no local folders, so Paperclip renders no folder panel", () => {
