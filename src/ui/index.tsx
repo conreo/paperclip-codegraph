@@ -27,6 +27,16 @@ import {
   type PluginSettingsPageProps,
 } from "@paperclipai/plugin-sdk/ui";
 
+import {
+  GATEWAY_NAME,
+  GATEWAY_SLUG,
+  PROFILE_KEY,
+  describeActivation,
+  isAlreadyExistsMessage,
+  type ActivationSummary,
+  type StepOutcome,
+} from "../activation.js";
+
 
 /** Must match the manifest id; the host namespaces tools with it. */
 const PLUGIN_ID = "paperclip-codegraph";
@@ -90,6 +100,24 @@ async function coreApi<T>(
   return parsed as T;
 }
 
+/**
+ * Run one activation step, treating "already exists" as success.
+ *
+ * Paperclip has no stable conflict code on these routes, so the message decides.
+ * Anything unrecognised is rethrown — a real failure must not be reported as a
+ * no-op.
+ */
+async function attempt(fn: () => Promise<unknown>): Promise<StepOutcome> {
+  try {
+    await fn();
+    return "created";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isAlreadyExistsMessage(message)) return "already-existed";
+    throw error;
+  }
+}
+
 export function SettingsPage({ context }: PluginSettingsPageProps) {
   const companyId = context.companyId;
 
@@ -113,44 +141,77 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
     if (!companyId) return;
     setBusy("activate");
     setMessage(null);
+
+    const profilesPath = `/api/companies/${companyId}/tools/profiles`;
+    const profileBody = {
+      profileKey: PROFILE_KEY,
+      name: "CodeGraph (read-only)",
+      description: "Read-only CodeGraph tools. Every CodeGraph tool is query-only.",
+      status: "active",
+      defaultAction: "deny",
+      entries: PROFILE_TOOL_NAMES.map((toolName) => ({
+        selectorType: "tool_name",
+        effect: "include",
+        toolName: `${PLUGIN_ID}:${toolName}`,
+      })),
+    };
+
     try {
-      const profile = await coreApi<{ id: string }>(
-        `/api/companies/${companyId}/tools/profiles`,
-        {
+      // 1. Profile. On a repeat press this is the step that used to fail, so a
+      //    conflict is resolved by reusing the profile this plugin owns rather
+      //    than by creating a second one.
+      let profileId: string;
+      let profileOutcome: StepOutcome;
+      try {
+        const created = await coreApi<{ id: string }>(profilesPath, {
           method: "POST",
-          body: {
-            profileKey: "codegraph-read",
-            name: "CodeGraph (read-only)",
-            description: "Read-only CodeGraph tools. Every CodeGraph tool is query-only.",
-            status: "active",
-            defaultAction: "deny",
-            entries: PROFILE_TOOL_NAMES.map((toolName) => ({
-              selectorType: "tool_name",
-              effect: "include",
-              toolName: `${PLUGIN_ID}:${toolName}`,
-            })),
-          },
-        },
+          body: profileBody,
+        });
+        profileId = created.id;
+        profileOutcome = "created";
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!isAlreadyExistsMessage(message)) throw error;
+        const listed = await coreApi<Array<{ id: string; profileKey: string }>>(profilesPath);
+        const existing = (Array.isArray(listed) ? listed : []).find(
+          (profile) => profile.profileKey === PROFILE_KEY,
+        );
+        if (!existing) {
+          throw new Error(
+            `A tool access record named "${PROFILE_KEY}" already exists but could not be found to reuse: ${message}`,
+          );
+        }
+        profileId = existing.id;
+        profileOutcome = "already-existed";
+      }
+
+      // 2. Bind at COMPANY scope on purpose. Paperclip keeps only the narrowest
+      //    matching binding tier (narrowestScopeBindings), so an agent-scoped
+      //    binding would silently stop the company profile applying to that
+      //    agent — granting CodeGraph could revoke their other tools.
+      const binding = await attempt(() =>
+        coreApi(`${profilesPath}/${profileId}/bind`, {
+          method: "POST",
+          body: { targetType: "company", targetId: companyId, priority: 100 },
+        }),
       );
 
-      // Bound at COMPANY scope on purpose. Paperclip keeps only the narrowest
-      // matching binding tier (narrowestScopeBindings), so an agent-scoped
-      // binding would silently stop the company profile applying to that agent —
-      // granting CodeGraph could revoke their other tools.
-      await coreApi(`/api/companies/${companyId}/tools/profiles/${profile.id}/bind`, {
-        method: "POST",
-        body: { targetType: "company", targetId: companyId, priority: 100 },
-      });
+      // 3. The named MCP gateway. Without one, no agent receives the tools even
+      //    with the profile attached and bound.
+      const gateway = await attempt(() =>
+        coreApi(`/api/companies/${companyId}/tools/gateways`, {
+          method: "POST",
+          body: { name: GATEWAY_NAME, slug: GATEWAY_SLUG, profileId },
+        }),
+      );
 
-      await coreApi(`/api/companies/${companyId}/tools/gateways`, {
-        method: "POST",
-        body: { name: "CodeGraph", slug: "codegraph", profileId: profile.id },
-      });
-
-      setMessage({
-        kind: "ok",
-        text: "Activated. Agents working in a Paperclip project now have CodeGraph for that project's repository.",
-      });
+      const summary: ActivationSummary = {
+        profileId,
+        profile: profileOutcome,
+        binding,
+        gateway,
+      };
+      setMessage({ kind: "ok", text: describeActivation(summary) });
     } catch (error) {
       setMessage({
         kind: "error",

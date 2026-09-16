@@ -44,7 +44,7 @@ export const CODEGRAPH_FOLDER_KEY = "codegraph-repositories";
 export const REQUEST_ACCESS_TOOL = "codegraph_request_access";
 
 /** Manifest version; keep in sync with package.json. */
-export const PLUGIN_VERSION = "0.5.1";
+export const PLUGIN_VERSION = "0.5.2";
 
 /**
  * `projectPath` is deliberately absent from every schema this plugin declares.
