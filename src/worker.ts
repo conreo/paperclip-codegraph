@@ -81,6 +81,11 @@ import {
   rebuildIndex,
 } from "./codegraph/manage.js";
 import { RequestError, RequestStore, describeRequest } from "./governance/requests.js";
+import {
+  acceptWorkspacePath,
+  buildWorkspaceGovernance,
+  shouldTryWorkspaceFallback,
+} from "./governance/workspace.js";
 
 // ---------------------------------------------------------------------------
 // Module state (one worker process)
@@ -178,25 +183,16 @@ async function workspaceForRun(
 ): Promise<string | null> {
   if (!projectId) return null;
   try {
+    // `projectId` comes from the run context, never from an agent argument, so
+    // the value is host-trusted. It is still validated, and the host itself
+    // checks that the project belongs to this company.
     const workspace = await ctx.projects.getPrimaryWorkspace(projectId, companyId);
-    const candidate = workspace?.path;
-    if (!candidate) return null;
-    return resolveProjectPath(candidate, { allowedProjectRoots: [...roots] });
+    return acceptWorkspacePath(workspace?.path, roots);
   } catch {
     return null;
   }
 }
 
-/**
- * Reasons that mean "we could not find a repository", as opposed to "you are not
- * allowed". Only these are eligible for the workspace fallback: a disabled
- * company, a disabled agent, or a tool denial must still deny.
- */
-const REPOSITORY_MISSING_REASONS = new Set([
-  "company_not_configured",
-  "no_project_bound",
-  "project_binding_missing",
-]);
 
 /**
  * Turn a governance binding path into an absolute one.
@@ -376,7 +372,11 @@ async function handleToolCall(
   // synthetic binding rather than by bypassing the resolver, so the narrowing
   // algebra and every tool decision stay exactly as tested: existing policy,
   // agents and per-project overrides are carried over verbatim.
-  if (!resolved.allowed && REPOSITORY_MISSING_REASONS.has(resolved.reason)) {
+  // If governance could not produce a repository, fall back to the workspace
+  // Paperclip says this run is working in. Implemented by re-resolving against a
+  // document with the workspace added as a binding, rather than by bypassing the
+  // resolver, so the narrowing algebra and every tool decision stay as tested.
+  if (shouldTryWorkspaceFallback(resolved)) {
     const workspace = await workspaceForRun(
       ctx,
       runCtx.companyId,
@@ -384,32 +384,19 @@ async function handleToolCall(
       containmentRoots(config, await repositoryRoot(ctx, runCtx.companyId)),
     );
     if (workspace) {
-      const existing = document.companies[runCtx.companyId];
-      const withWorkspace = parseGovernance({
-        version: 1,
-        defaults: document.defaults,
-        companies: {
-          [runCtx.companyId]: {
-            ...(existing ?? {}),
-            enabled: true,
-            defaultProjectKey: existing?.defaultProjectKey ?? "workspace",
-            projects: {
-              ...(existing?.projects ?? {}),
-              workspace: {
-                projectKey: "workspace",
-                path: workspace,
-                displayName: "Project workspace",
-              },
-            },
-          },
+      const retry = resolveScope(
+        buildWorkspaceGovernance({
+          document,
+          companyId: runCtx.companyId,
+          workspacePath: workspace,
+        }),
+        {
+          companyId: runCtx.companyId,
+          paperclipProjectId: runCtx.projectId ?? null,
+          agentId: runCtx.agentId ?? null,
+          pluginEnabled: config.enabled,
         },
-      });
-      const retry = resolveScope(withWorkspace, {
-        companyId: runCtx.companyId,
-        paperclipProjectId: runCtx.projectId ?? null,
-        agentId: runCtx.agentId ?? null,
-        pluginEnabled: config.enabled,
-      });
+      );
       if (retry.allowed) resolved = retry;
     }
   }
