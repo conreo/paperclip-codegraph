@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "policy": {
+    "deniedTools": [
+      "codegraph_impact"
+    ]
+  },
+  "projects": {
+    "payments": {
+      "projectKey": "payments",
+      "path": "/home/rimko/projects/paperclip-codegraph/paperclip-e2e-fixtures/tenant-a/payments-service",
+      "displayName": "Payments"
+    }
+  },
+  "defaultProjectKey": "payments",
+  "agents": {
+    "e2e-agent-restricted": {
+      "policy": {
+        "allowedTools": [
+          "codegraph_explore",
+          "codegraph_search"
+        ]
+      }
+    }
+  }
+}
