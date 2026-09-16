@@ -1,6 +1,6 @@
 {
   "name": "paperclip-codegraph",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "CodeGraph code-intelligence MCP tools for Paperclip agents, with per-company, per-project and per-agent governance.",
   "scripts": {
@@ -18,7 +18,8 @@
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
-    "worker": "./dist/worker.js"
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
   },
   "keywords": [
     "paperclip",
@@ -56,16 +57,21 @@
     "node": ">=24.11.0"
   },
   "peerDependencies": {
-    "@paperclipai/plugin-sdk": ">=2026.817.0"
+    "@paperclipai/plugin-sdk": ">=2026.817.0",
+    "react": ">=18"
   },
   "peerDependenciesMeta": {
     "@paperclipai/plugin-sdk": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   },
   "devDependencies": {
     "@paperclipai/plugin-sdk": "^2026.817.0",
     "@types/node": "^24.6.0",
+    "@types/react": "^19.0.8",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"

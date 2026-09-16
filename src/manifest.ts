@@ -44,9 +44,23 @@ const manifest: PaperclipPluginManifestV1 = {
     // UI. The host validates the path (containment, symlinks) and reports health,
     // so the plugin never has to accept a hand-typed path from an agent.
     "local.folders",
+    // Required by the settingsPage slot below. The host validates this pairing
+    // and rejects the manifest without it, naming the capability in the error.
+    "instance.settings.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
+    ui: "./dist/ui",
+  },
+  ui: {
+    slots: [
+      {
+        type: "settingsPage",
+        id: "codegraph-settings",
+        displayName: "CodeGraph",
+        exportName: "SettingsPage",
+      },
+    ],
   },
   instanceConfigSchema: INSTANCE_CONFIG_SCHEMA,
   localFolders: [

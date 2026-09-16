@@ -70,7 +70,7 @@ import {
   redactPath,
 } from "./governance/sanitize.js";
 import { buildNativeMcpPlan, renderPlanAsCurl } from "./governance/provision.js";
-import { ensureBinary, ensureIndex, indexStatus } from "./codegraph/manage.js";
+import { ensureBinary, ensureIndex, indexStatus, isIndexed } from "./codegraph/manage.js";
 
 // ---------------------------------------------------------------------------
 // Module state (one worker process)
@@ -592,6 +592,86 @@ const plugin = definePlugin({
             },
           ]),
         ),
+      };
+    });
+
+    /**
+     * The single line that answers "why doesn't it work?" for an operator.
+     *
+     * Checks the four things that must all be true — enabled, CLI present,
+     * repositories directory set, repository indexed — and reports each one
+     * independently, so the page never shows a blank failure.
+     */
+    ctx.data.register("readiness", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) {
+        return {
+          enabled: false,
+          codegraph: { ok: false, version: null, detail: "No company context" },
+          folder: { configured: false, alias: null },
+          repository: { configured: false, key: null, indexed: false, alias: null },
+        };
+      }
+
+      const { config: scoped, error: configError } = await loadConfig(ctx, companyId);
+      const root = await repositoryRoot(ctx, companyId);
+
+      const binary = configError
+        ? { ok: false, version: null, detail: configError }
+        : await ensureBinary({
+            command: scoped.codegraphCommand,
+            autoInstall: false,
+            version: scoped.codegraphVersion,
+            timeoutMs: 15_000,
+            env: mcpEnv(scoped),
+          });
+
+      let repository = {
+        configured: false,
+        key: null as string | null,
+        indexed: false,
+        alias: null as string | null,
+      };
+
+      if (!configError) {
+        const document = await new GovernanceStore(ctx.state).loadForResolve(companyId);
+        const resolved = resolveScope(document, {
+          companyId,
+          pluginEnabled: scoped.enabled,
+        });
+        if (resolved.allowed && resolved.project) {
+          repository.key = resolved.project.projectKey;
+          repository.alias = resolved.project.projectKey;
+          repository.configured = true;
+          try {
+            const bound = resolveProjectPath(bindingPathFor(resolved.project.path, root), {
+              allowedProjectRoots: containmentRoots(scoped, root),
+            });
+            // The alias, not the path: this feeds a UI and must not disclose
+            // the host's directory layout.
+            repository.alias = path.basename(bound);
+            repository.indexed = await isIndexed(bound);
+          } catch {
+            repository.indexed = false;
+          }
+        }
+      }
+
+      return {
+        enabled: scoped.enabled,
+        codegraph: { ok: binary.ok, version: binary.version, detail: binary.detail },
+        folder: { configured: root !== null, alias: root ? path.basename(root) : null },
+        repository,
+      };
+    });
+
+    /** The company's agents, with names, so the settings page can list them. */
+    ctx.data.register("agents", async (params) => {
+      const companyId = asString(params?.["companyId"]);
+      if (!companyId) return { agents: [] };
+      const rows = await ctx.agents.list({ companyId, limit: 200, offset: 0 });
+      return {
+        agents: rows.map((agent) => ({ id: agent.id, name: agent.name })),
       };
     });
 

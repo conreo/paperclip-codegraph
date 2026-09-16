@@ -37,6 +37,7 @@ describe("manifest", () => {
       // settings UI, so the capability and the declaration must stay paired:
       // declaring a folder without the capability is rejected by the host.
       "local.folders",
+      "instance.settings.register",
     ]) {
       expect(manifest.capabilities).toContain(capability);
     }
@@ -61,11 +62,22 @@ describe("manifest", () => {
     expect(folder.requiredFiles ?? []).toHaveLength(0);
   });
 
-  it("exposes the worker entrypoint and nothing it does not ship", () => {
+  it("exposes the worker and UI entrypoints it actually ships", () => {
     expect(manifest.entrypoints.worker).toBe("./dist/worker.js");
-    // No UI bundle is built, so no ui entrypoint and no ui slots may be declared.
-    expect(manifest.entrypoints.ui).toBeUndefined();
-    expect(manifest.ui).toBeUndefined();
+    // Declaring a ui entrypoint without building it is an install-time failure,
+    // so the two must stay paired.
+    expect(manifest.entrypoints.ui).toBe("./dist/ui");
+    // A settingsPage slot requires this exact capability; the host rejects the
+    // manifest as inconsistent without it.
+    expect(manifest.capabilities).toContain("instance.settings.register");
+  });
+
+  it("declares a settings page that the ui bundle exports", () => {
+    const slots = manifest.ui?.slots ?? [];
+    const settings = slots.find((slot) => slot.type === "settingsPage");
+    expect(settings).toBeDefined();
+    // exportName must match the named export in src/ui/index.tsx.
+    expect(settings?.exportName).toBe("SettingsPage");
   });
 
   it("declares exactly the eight CodeGraph tools", () => {
