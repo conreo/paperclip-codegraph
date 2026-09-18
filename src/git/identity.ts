@@ -168,3 +168,97 @@ export async function indexRoot(
   const identity = await gitIdentity(workspacePath, run);
   return { root: identity.root ?? workspacePath, identity };
 }
+
+/**
+ * A repository found inside a project's workspace.
+ *
+ * `relativePath` is `""` when the workspace itself is the repository, which is the
+ * ordinary single-checkout case; otherwise it names the child directory, because a
+ * project's managed folder is often a container for several checkouts rather than a
+ * checkout itself.
+ */
+export interface DiscoveredRepository {
+  /** Absolute path to the repository root. */
+  path: string;
+  /**
+   * Where this repository sits inside the workspace. `""` means the workspace
+   * itself, which is the ordinary single-checkout case. Doubles as the stable
+   * identity of the repository within its project: it is the one label that
+   * survives a re-index, a re-clone, and a reload of the settings page.
+   *
+   * Safe to show. It is a directory *name* relative to the workspace, not a host
+   * path, and the plugin redacts host layout everywhere else.
+   */
+  relativePath: string;
+}
+
+/**
+ * Every repository inside a workspace, without guessing.
+ *
+ * Paperclip's managed layout puts a checkout at `<parent>/<repo-name>/`, and a
+ * project may hold **several** — one real project on this host holds six. The plugin
+ * used to require the workspace root itself to be a repository and silently skipped
+ * the project otherwise, which is why a multi-repo project appeared as no repository
+ * at all in the dashboard.
+ *
+ * Two depths only, deliberately:
+ *
+ *   - the workspace root, if it is a repository;
+ *   - its immediate children, because that is the shape Paperclip creates.
+ *
+ * It does not recurse further. A deep search would eventually find a vendored
+ * checkout inside `node_modules` or a fixture, and a repository nobody meant to
+ * index is worse than one not yet discovered. A child that is not a repository is
+ * simply not a candidate.
+ *
+ * Results are ordered and deduplicated by path, so the same tree always yields the
+ * same list and a caller can take the first entry as a stable primary.
+ *
+ * ## The workspace with no checkout on disk
+ *
+ * `remoteUrl` is Paperclip's own answer to "is this a repository?" — the
+ * workspace's `repo_url`. When nothing is found on disk but that is set, the
+ * workspace is reported as a single repository anyway. Two real shapes need this:
+ * a project whose checkout has not been cloned yet, and a project pointing *into*
+ * a larger checkout (a package inside a monorepo), where the repository root is an
+ * ancestor of the workspace and only `git rev-parse` can find it — the workspace
+ * itself carries no `.git`, so a discovery-only answer would be "no repository"
+ * for a project that is plainly in one.
+ *
+ * A workspace that does not exist is still nothing: a vanished folder cannot be
+ * indexed, so reporting a row for it would only offer a button that fails.
+ */
+export async function findRepositories(
+  workspacePath: string,
+  options: { remoteUrl?: string | null } = {},
+): Promise<DiscoveredRepository[]> {
+  const found: DiscoveredRepository[] = [];
+
+  if (await isGitRepository(workspacePath)) {
+    found.push({ path: workspacePath, relativePath: "" });
+  } else {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(workspacePath);
+    } catch {
+      return [];
+    }
+
+    for (const entry of entries.sort()) {
+      // Skip the obvious non-candidates rather than stat-ing everything: these are
+      // never a repository root, and readdir on a large workspace is the expensive
+      // part of this function.
+      if (entry.startsWith(".") || entry === "node_modules") continue;
+      const child = path.join(workspacePath, entry);
+      if (await isGitRepository(child)) {
+        found.push({ path: child, relativePath: entry });
+      }
+    }
+
+    if (found.length === 0 && options.remoteUrl) {
+      found.push({ path: workspacePath, relativePath: "" });
+    }
+  }
+
+  return found;
+}

@@ -374,7 +374,13 @@ What the plugin is for is the part Paperclip needs:
   gateway, with per-project and per-agent narrowing it cannot provide on its own;
 - **the MCP wiring** that makes those tools reachable by an agent at all;
 - **the repository resolution** — a repository is a Paperclip project's workspace,
-  never a path an agent types.
+  never a path an agent types;
+- **repository discovery** — a project's managed folder is a container, not always a
+  checkout, so the plugin finds the checkouts inside it: one nested (the usual
+  `_default/<repo>` shape), or several side by side. Each becomes its own row, with
+  its own index and its own "Index now", identified by its path relative to the
+  workspace (`""` is the workspace itself). Nothing is guessed beyond one level down,
+  so a vendored checkout inside `node_modules` is never indexed by accident.
 
 To **read** the graph, run `codegraph ui` on the host. It is a local, read-only
 viewer for the project you already indexed, and it needs no Paperclip wiring:
@@ -483,43 +489,66 @@ curl -fsS -X POST "$PAPERCLIP_API_URL/api/plugins/$PLUGIN_ID/bridge/data" \
   -d '{"key":"verify-scope","companyId":"'$COMPANY_ID'","params":{"query":"auth flow"}}'
 ```
 
-### A repository that shows as "not indexed"
+### A repository that shows as "not indexed", or does not show at all
 
-Ask why, rather than guessing. A repository that is plainly indexed showing as *not
-indexed* is not debuggable from the UI — the plugin never discloses host paths, so
-a stale render and a wrong resolution look identical. `graph-diagnose` reports the
-chain the plugin actually followed:
+The settings page answers the first case itself: a row that is listed but not indexed
+is a repository discovery found, and the question is only whether CodeGraph has read
+it. Press **Index now**, and if it fails the reason comes back in the toast.
+
+The second case — a project whose repository *is* on the host but which appears in
+the settings page as no repository at all — is the one that used to be undebuggable,
+because the plugin never discloses host paths, so a wrong resolution and a genuinely
+empty workspace look identical. Read the discovery result directly instead of
+guessing at it. This is what the page itself reads:
 
 ```bash
 curl -fsS -X POST "$PAPERCLIP_API_URL/api/plugins/$PLUGIN_ID/bridge/data" \
   -H 'Content-Type: application/json' \
-  -d '{"key":"graph-diagnose","companyId":"'$COMPANY_ID'","params":{"companyId":"'$COMPANY_ID'","projectId":"'$PROJECT_ID'"}}'
+  -d '{"key":"graph-projects","companyId":"'$COMPANY_ID'","params":{"companyId":"'$COMPANY_ID'"}}'
 ```
 
 ```jsonc
 {
-  "workspaceAccepted": true,      // false ⇒ the host gave no path, or containment refused it
-  "workspaceAlias": "pos",        // last path segment only — never a host layout
-  "repoUrl": "https://gitea/root/pos",
-  "gitRootAlias": "pos",
-  "gitRootIsWorkspace": true,     // false ⇒ the project is a subdirectory of a checkout
-  "repositoryName": "pos",        // from `git remote get-url origin`
-  "indexed": true,                // the answer to the question you asked
-  "indexPathAlias": "pos/.codegraph",
-  "hasGitEntry": true,
-  "gitAvailable": true,           // false ⇒ identity fell back to the workspace path
-  "containmentRootCount": 0       // 0 ⇒ `allowedProjectRoots` is empty, so nothing is refused
+  "organization": "Vroomy",
+  "repositories": [
+    {
+      "projectId": "e77f5825-…",
+      "repositoryKey": "vroomy-backend",   // path relative to the project's workspace
+      "name": "vroomy-backend",
+      "projectName": "Vroomy",
+      "repoName": "vroomy-backend",        // from `git remote get-url origin`
+      "indexed": false
+    }
+    // …six rows, one per checkout in the project folder
+  ],
+  "enabled": true,
+  "skippedProjects": 0,                    // projects with no repository at all
+  "detail": "This org has 3 project(s), none with a repository workspace."
 }
 ```
 
-That is enough to separate the three causes: the host resolved no workspace
-(`workspaceAccepted: false`), git resolved a root that is not where the index is
-(`gitRootIsWorkspace: false`), or the index genuinely is not there (`indexed: false`
-with `indexPathAlias` naming where it looked).
+That separates the three causes:
 
-A passing result reports `ok: true`, the resolved `projectKey`, the upstream tool
-count, and `filesServed` — the project-relative files CodeGraph actually returned,
-which is the evidence that the *right* repository answered.
+- **`repositories` is empty and `skippedProjects` counts your project** — the
+  workspace itself is not a checkout and holds none: either the code has not been
+  cloned, or it lives deeper than one level below the workspace. Discovery looks at
+  the workspace and its immediate children, and no further.
+- **`repositories` has a row with `"indexed": false`** — discovery is fine and only
+  the index is missing. That is a normal state, not a fault.
+- **The row is missing a repository you expected inside a multi-repository project** —
+  check `repositoryKey`. Every checkout of a project is its own row, and a directory
+  that is not a repository root (a vendored copy under `node_modules`, a hidden
+  directory) is deliberately not one.
+
+`repositoryKey` is the only identifier ever sent back to the host. It is a directory
+name relative to the workspace — never an absolute path — so it is safe to print and
+safe to paste into a bug report.
+
+To check that a *scope* — not just a repository — resolves end to end, the
+`verify-scope` data key runs a real `codegraph_explore` through the governed path and
+reports `ok: true`, the resolved `projectKey`, `upstreamToolCount`, `effectiveTools`,
+and `filesServed` — the project-relative files CodeGraph actually returned, which is
+the evidence that the *right* repository answered.
 
 The full isolation suite, against a live instance:
 

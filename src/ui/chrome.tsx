@@ -132,6 +132,37 @@ export const styles: Record<string, CSSProperties> = {
   rowMeta: { fontSize: 12.5, color: ui.mutedForeground, fontFamily: ui.fontMono },
   rowActions: { display: "flex", gap: 8, flex: "0 0 auto" },
 
+  /**
+   * The checkouts inside one project, listed under the project's own row.
+   *
+   * One switch governs a whole project, so a project holding six repositories
+   * cannot be six switched rows: the switch would repeat six times and all six
+   * would move together. The switch belongs to the project; the repositories it
+   * contains are listed under it.
+   */
+  subRows: {
+    listStyle: "none",
+    padding: 0,
+    margin: "3px 0 0",
+    display: "flex",
+    flexDirection: "column",
+    gap: 3,
+  },
+  subRow: {
+    display: "flex",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: 12,
+    minWidth: 0,
+  },
+  subRowTitle: {
+    fontSize: 13,
+    color: ui.foreground,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+
   // -- Status list --------------------------------------------------------
   list: { listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 6 },
   statusRow: { display: "flex", gap: 8, alignItems: "flex-start", fontSize: 14, lineHeight: 1.5 },

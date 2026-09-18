@@ -20,7 +20,7 @@
  * accurate and unreadable; it now says what happens, and what the switch does.
  */
 
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   usePluginAction,
   usePluginData,
@@ -69,13 +69,40 @@ interface AgentRow {
 
 interface RepoRow {
   projectId: string;
+  /**
+   * Which repository inside the project. `""` is the project's own checkout, and
+   * a name like `vroomy-backend` is one of several under the same project folder.
+   * It is what every action sends back, so a row identifies a repository and not
+   * just a project.
+   */
+  repositoryKey: string;
   name: string;
+  /** The project's name, so a repository can say which project it belongs to. */
+  projectName?: string | null;
   alias: string;
   repoName?: string | null;
   indexed: boolean;
   blocked?: boolean;
   fileCount?: number | null;
   nodeCount?: number | null;
+}
+
+/** Stable identity of one row: a project can hold more than one repository. */
+function repoId(repo: RepoRow): string {
+  return `${repo.projectId}:${repo.repositoryKey}`;
+}
+
+/**
+ * The aside on a row: whichever of the two names is not already the title.
+ *
+ * One checkout is titled after its project, so the aside is the repository. Six
+ * checkouts cannot be, so they are titled after themselves and the aside is the
+ * project they share — which is the only thing that tells them apart from another
+ * project's repositories.
+ */
+function repoAside(repo: RepoRow): string | null {
+  const aside = repo.name === repo.projectName ? repo.repoName : repo.projectName;
+  return aside && aside !== repo.name ? aside : null;
 }
 
 interface Readiness {
@@ -677,17 +704,33 @@ function Repositories({
   const repositories = data?.repositories ?? [];
   const skipped = data?.skippedProjects ?? 0;
 
+  // The switch is a per-project control, so the list is grouped by project: a
+  // project holding several checkouts is one decision, not several. Without this
+  // a six-repository project draws six identical switches that all move together.
+  const groups = useMemo(() => {
+    const byProject = new Map<string, RepoRow[]>();
+    for (const repo of repositories) {
+      const existing = byProject.get(repo.projectId);
+      if (existing) existing.push(repo);
+      else byProject.set(repo.projectId, [repo]);
+    }
+    return [...byProject.values()];
+  }, [repositories]);
+
   const toggle = useCallback(
-    async (repo: RepoRow, blocked: boolean) => {
-      setBusy(repo.projectId);
+    async (project: RepoRow[], blocked: boolean) => {
+      const first = project[0];
+      if (!first) return;
+      const title = first.projectName ?? first.name;
+      setBusy(first.projectId);
       try {
-        await setAccess({ companyId, projectId: repo.projectId, blocked });
+        await setAccess({ companyId, projectId: first.projectId, blocked });
         refresh();
         onChanged();
         onMessage(
           blocked
-            ? `Agents working in ${repo.name} no longer get CodeGraph.`
-            : `${repo.name} is available to CodeGraph again.`,
+            ? `Agents working in ${title} no longer get CodeGraph.`
+            : `${title} is available to CodeGraph again.`,
           blocked ? "warn" : "success",
         );
       } catch (error) {
@@ -712,31 +755,54 @@ function Repositories({
         </p>
       ) : (
         <ul style={styles.rows}>
-          {repositories.map((repo) => (
-            <li key={repo.projectId} style={styles.row}>
-              <div style={styles.rowText}>
-                <span style={styles.rowTitle}>
-                  {repo.name}
-                  {repo.repoName && repo.repoName !== repo.name ? (
-                    <span style={styles.rowAside}> · {repo.repoName}</span>
+          {groups.map((project) => {
+            const first = project[0]!;
+            const title = first.projectName ?? first.name;
+            const indexed = project.filter((repo) => repo.indexed).length;
+            return (
+              <li key={first.projectId} style={styles.row}>
+                <div style={styles.rowText}>
+                  <span style={styles.rowTitle}>
+                    {title}
+                    {project.length === 1 && repoAside(first) ? (
+                      <span style={styles.rowAside}> · {repoAside(first)}</span>
+                    ) : null}
+                  </span>
+                  <span style={styles.rowMeta}>
+                    {indexed === 0
+                      ? "Not indexed"
+                      : project.length === 1
+                        ? first.fileCount === null || first.fileCount === undefined
+                          ? "Indexed"
+                          : `Indexed · ${first.fileCount} files, ${first.nodeCount ?? "?"} symbols`
+                        : `${indexed} of ${project.length} repositories indexed`}
+                  </span>
+                  {/*
+                    Only when there is something to disambiguate. A single
+                    checkout under a project would just repeat the row's title.
+                  */}
+                  {project.length > 1 ? (
+                    <ul style={styles.subRows}>
+                      {project.map((repo) => (
+                        <li key={repoId(repo)} style={styles.subRow}>
+                          <span style={styles.subRowTitle}>{repo.name}</span>
+                          <span style={styles.rowMeta}>
+                            {repo.indexed ? "Indexed" : "Not indexed"}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
                   ) : null}
-                </span>
-                <span style={styles.rowMeta}>
-                  {repo.indexed
-                    ? repo.fileCount === null || repo.fileCount === undefined
-                      ? "Indexed"
-                      : `Indexed · ${repo.fileCount} files, ${repo.nodeCount ?? "?"} symbols`
-                    : "Not indexed"}
-                </span>
-              </div>
-              <Switch
-                checked={repo.blocked !== true}
-                disabled={busy !== null}
-                label={`Allow CodeGraph to read ${repo.name}`}
-                onChange={(next) => void toggle(repo, !next)}
-              />
-            </li>
-          ))}
+                </div>
+                <Switch
+                  checked={first.blocked !== true}
+                  disabled={busy !== null}
+                  label={`Allow CodeGraph to read ${title}`}
+                  onChange={(next) => void toggle(project, !next)}
+                />
+              </li>
+            );
+          })}
         </ul>
       )}
       {skipped > 0 ? (
@@ -773,9 +839,17 @@ function Indexing({
 
   const run = useCallback(
     async (repo: RepoRow, reindex: boolean) => {
-      setBusy(`${repo.projectId}:${reindex ? "rebuild" : "index"}`);
+      setBusy(`${repoId(repo)}:${reindex ? "rebuild" : "index"}`);
       try {
-        await indexNow({ companyId, projectId: repo.projectId, reindex });
+        // The key matters: a project can hold several checkouts, and indexing the
+        // wrong one would report success while the operator's repository stayed
+        // unindexed.
+        await indexNow({
+          companyId,
+          projectId: repo.projectId,
+          repositoryKey: repo.repositoryKey,
+          reindex,
+        });
         refresh();
         onChanged();
         onMessage(
@@ -805,9 +879,14 @@ function Indexing({
       ) : (
         <ul style={styles.rows}>
           {repositories.map((repo) => (
-            <li key={repo.projectId} style={styles.row}>
+            <li key={repoId(repo)} style={styles.row}>
               <div style={styles.rowText}>
-                <span style={styles.rowTitle}>{repo.name}</span>
+                <span style={styles.rowTitle}>
+                  {repo.name}
+                  {repoAside(repo) ? (
+                    <span style={styles.rowAside}> · {repoAside(repo)}</span>
+                  ) : null}
+                </span>
                 <span style={styles.rowMeta}>
                   {repo.indexed
                     ? `${repo.fileCount ?? "?"} files · ${repo.nodeCount ?? "?"} symbols`
@@ -816,14 +895,14 @@ function Indexing({
               </div>
               <div style={styles.rowActions}>
                 <Button disabled={busy !== null} onClick={() => void run(repo, false)}>
-                  {busy === `${repo.projectId}:index` ? "Indexing…" : "Index now"}
+                  {busy === `${repoId(repo)}:index` ? "Indexing…" : "Index now"}
                 </Button>
                 <Button
                   disabled={busy !== null}
                   title="Discard the index and build it again from scratch"
                   onClick={() => void run(repo, true)}
                 >
-                  {busy === `${repo.projectId}:rebuild` ? "Rebuilding…" : "Rebuild"}
+                  {busy === `${repoId(repo)}:rebuild` ? "Rebuilding…" : "Rebuild"}
                 </Button>
               </div>
             </li>

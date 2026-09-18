@@ -111,11 +111,16 @@ import {
 import { DatabaseSync } from "node:sqlite";
 import {
   NO_GIT_IDENTITY,
+  findRepositories,
   indexRoot,
-  isGitRepository,
   type CommandRunner,
   type GitIdentity,
 } from "./git/identity.js";
+import {
+  repositoryRow,
+  selectRepository,
+  type RepositoryRow,
+} from "./graph/repository-rows.js";
 import {
   acceptWorkspacePath,
   buildWorkspaceGovernance,
@@ -963,6 +968,87 @@ const plugin = definePlugin({
     };
 
     /**
+     * Every repository this org's projects hold, **one entry per repository**.
+     *
+     * A project does not always point at a checkout. Paperclip's managed folder is
+     * a container, and one real project on this host holds six checkouts side by
+     * side; another holds a single checkout one level down. The plugin used to
+     * require `.git` at the folder root and silently skipped the project otherwise,
+     * so both of those appeared in the dashboard as *no repository at all* — which
+     * is what this fixes.
+     *
+     * Returns the host path alongside each row, because the callers need it to
+     * index and to read counts. Callers must strip it: a path never leaves the
+     * worker.
+     */
+    const projectRepositoryRows = async (
+      companyId: string,
+      roots: readonly string[],
+      options: { blocked?: (projectId: string) => boolean } = {},
+    ): Promise<{
+      rows: Array<RepositoryRow & { path: string }>;
+      skippedProjects: number;
+      detail?: string;
+    }> => {
+      let projects: Array<{ id: string; name?: string }> = [];
+      try {
+        projects = await ctx.projects.list({ companyId, limit: 200, offset: 0 });
+      } catch {
+        return { rows: [], skippedProjects: 0, detail: "This org has no readable projects." };
+      }
+
+      const rows: Array<RepositoryRow & { path: string }> = [];
+      let skippedProjects = 0;
+
+      for (const project of projects) {
+        try {
+          const workspace = await ctx.projects.getPrimaryWorkspace(project.id, companyId);
+          const resolved = acceptWorkspacePath(workspace?.path, roots);
+          if (!resolved) {
+            skippedProjects += 1;
+            continue;
+          }
+
+          const found = await findRepositories(resolved, { remoteUrl: workspace?.repoUrl });
+          if (found.length === 0) {
+            // A project with no code at all — a backlog idea, a cancelled
+            // onboarding project — is not a repository and has nothing to index.
+            // Listing it would be noise on a row that cannot be acted on.
+            skippedProjects += 1;
+            continue;
+          }
+
+          for (const repository of found) {
+            const { identity } = await repositoryIdentity(repository.path);
+            rows.push({
+              ...repositoryRow({
+                projectId: project.id,
+                projectName: project.name ?? null,
+                repositoryKey: repository.relativePath,
+                repositoryName: identity.name,
+                folderName: path.basename(repository.path),
+                siblings: found.length,
+                indexed: await isIndexed(repository.path),
+                // The primary control: whether this org may read this repository
+                // at all. Absent means yes — access is derived, and this only
+                // narrows. It is a per-project flag, which is why the settings
+                // page groups rows by project rather than showing one switch per
+                // checkout.
+                blocked: options.blocked?.(project.id) === true,
+              }),
+              path: repository.path,
+            });
+          }
+        } catch {
+          // A project with no usable workspace is simply not offered.
+          skippedProjects += 1;
+        }
+      }
+
+      return { rows, skippedProjects };
+    };
+
+    /**
      * This org's repositories, taken from its own Paperclip projects.
      *
      * Read-only and display-only: a repository is not configured here, it follows
@@ -985,60 +1071,34 @@ const plugin = definePlugin({
       });
       const roots = containmentRoots(scoped, await repositoryRoot(ctx, companyId));
 
+      const built = await projectRepositoryRows(companyId, roots);
+      if (built.detail) return { repositories: [], detail: built.detail };
+
       const repositories: Array<Record<string, unknown>> = [];
-      let projects: Array<{ id: string; name?: string }> = [];
-      try {
-        projects = await ctx.projects.list({ companyId, limit: 200, offset: 0 });
-      } catch {
-        return { repositories: [], detail: "This org has no readable projects." };
-      }
+      for (const row of built.rows) {
+        const entry: Record<string, unknown> = { ...row };
+        // A path never leaves the worker; the row's `repositoryKey` is what the
+        // caller sends back.
+        delete entry["path"];
 
-      for (const project of projects) {
-        try {
-          const workspace = await ctx.projects.getPrimaryWorkspace(project.id, companyId);
-          const path_ = acceptWorkspacePath(workspace?.path, roots);
-          if (!path_) continue;
+        // The index lives at the repository root, which is the checkout itself
+        // for an ordinary project. `alias` is kept for callers that want a
+        // one-word label and must not disclose host layout.
+        entry["alias"] = row.repoName ?? path.basename(row.path);
 
-          // The index lives at the repository root, which is the workspace
-          // itself for an ordinary checkout and an ancestor of it when the
-          // project points into a monorepo.
-          const { root: indexAt, identity } = await repositoryIdentity(path_);
-
-          // Repositories only, for the same reason as the selector above: a
-          // project with no checkout is not a repository and has nothing to index.
-          if (!workspace?.repoUrl && !(await isGitRepository(indexAt))) continue;
-
-          const entry: Record<string, unknown> = {
-            projectId: project.id,
-            name: project.name ?? identity.name ?? path.basename(path_),
-            // Alias only — this feeds a UI and must not disclose host layout.
-            // The repository name is preferred over the folder name because the
-            // folder is an accident of how Paperclip checked the code out.
-            alias: identity.name ?? path.basename(path_),
-            repoName: identity.name,
-            indexed: await isIndexed(indexAt),
-          };
-          if (identity.root && identity.root !== path_) {
-            // The project is a subdirectory of the checkout. Worth showing: it
-            // explains why the graph may include more than this project.
-            entry["repositoryRootIsParent"] = true;
-          }
-          if (entry["indexed"] && binary.ok) {
-            const status = await indexStatus({
-              projectPath: indexAt,
-              command: binary.resolvedPath ?? scoped.codegraphCommand,
-              timeoutMs: 20_000,
-              env,
-            });
-            const parsed = (status.parsed ?? {}) as Record<string, unknown>;
-            entry["fileCount"] = parsed["fileCount"] ?? null;
-            entry["nodeCount"] = parsed["nodeCount"] ?? null;
-            entry["lastIndexed"] = parsed["lastIndexed"] ?? null;
-          }
-          repositories.push(entry);
-        } catch {
-          // A project with no usable workspace is simply not listed.
+        if (entry["indexed"] && binary.ok) {
+          const status = await indexStatus({
+            projectPath: row.path,
+            command: binary.resolvedPath ?? scoped.codegraphCommand,
+            timeoutMs: 20_000,
+            env,
+          });
+          const parsed = (status.parsed ?? {}) as Record<string, unknown>;
+          entry["fileCount"] = parsed["fileCount"] ?? null;
+          entry["nodeCount"] = parsed["nodeCount"] ?? null;
+          entry["lastIndexed"] = parsed["lastIndexed"] ?? null;
         }
+        repositories.push(entry);
       }
 
       return { repositories, codegraph: { ok: binary.ok, version: binary.version } };
@@ -1060,62 +1120,21 @@ const plugin = definePlugin({
       if (error) return { repositories: [], error };
       const roots = containmentRoots(scoped, await repositoryRoot(ctx, companyId));
 
-      const repositories: Array<Record<string, unknown>> = [];
-      let projects: Array<{ id: string; name?: string }> = [];
-      try {
-        projects = await ctx.projects.list({ companyId, limit: 200, offset: 0 });
-      } catch {
-        return { repositories: [], detail: "This org has no readable projects." };
-      }
-
       // One read of the governance document, so every row reports its own
-      // override rather than a per-row lookup.
+      // override rather than a per-project lookup.
       const store = new GovernanceStore(ctx.state);
       const companyGovernance = await store.getCompany(companyId);
 
-      let skipped = 0;
-      for (const project of projects) {
-        try {
-          const workspace = await ctx.projects.getPrimaryWorkspace(project.id, companyId);
-          const resolved = acceptWorkspacePath(workspace?.path, roots);
-          if (!resolved) {
-            skipped += 1;
-            continue;
-          }
-          const { root: indexAt, identity } = await repositoryIdentity(resolved);
+      const built = await projectRepositoryRows(companyId, roots, {
+        blocked: (projectId) =>
+          companyGovernance?.projectsByPaperclipProject?.[projectId]?.enabled === false,
+      });
+      if (built.detail) return { repositories: [], detail: built.detail };
 
-          // Only repositories are listed. A Paperclip project can exist with no
-          // code at all — a backlog idea, a cancelled onboarding project — and
-          // its managed folder carries no checkout. Listing those as
-          // "repositories, not indexed" is noise on rows that cannot be acted on.
-          //
-          // Paperclip already knows whether the workspace is a repository
-          // (`repoUrl`), and a bare `git init` with no remote is still a
-          // repository, so the check falls back to `.git` rather than trusting
-          // the URL alone.
-          if (!workspace?.repoUrl && !(await isGitRepository(indexAt))) {
-            skipped += 1;
-            continue;
-          }
-
-          repositories.push({
-            projectId: project.id,
-            name: project.name ?? identity.name ?? path.basename(resolved),
-            // The repository's own name, not the folder's: the folder is an
-            // accident of how Paperclip checked the code out.
-            alias: identity.name ?? path.basename(resolved),
-            repoName: identity.name,
-            indexed: await isIndexed(indexAt),
-            // The primary control: whether this org may read this repository at
-            // all. Absent means yes — access is derived, and this only narrows.
-            blocked:
-              companyGovernance?.projectsByPaperclipProject?.[project.id]?.enabled === false,
-          });
-        } catch {
-          // A project with no usable workspace is simply not offered.
-          skipped += 1;
-        }
-      }
+      const repositories = built.rows.map((row) => {
+        const { path: _path, ...rest } = row;
+        return { ...rest, alias: row.repoName ?? path.basename(row.path) };
+      });
 
       return {
         // The org's own name, so every CodeGraph surface can say whose code it
@@ -1128,12 +1147,12 @@ const plugin = definePlugin({
         // Projects that are not repositories are counted rather than listed, so
         // "nothing here" is distinguishable from "three projects, none of which
         // have code".
-        skippedProjects: skipped,
+        skippedProjects: built.skippedProjects,
         detail:
           repositories.length === 0
-            ? projects.length === 0
+            ? built.skippedProjects === 0
               ? "This org has no projects."
-              : `This org has ${projects.length} project(s), none with a repository workspace.`
+              : `This org has ${built.skippedProjects} project(s), none with a repository workspace.`
             : undefined,
       };
     });
@@ -1141,12 +1160,16 @@ const plugin = definePlugin({
     /**
      * Resolve the repository a graph request is about.
      *
-     * The operator picks a project; the path comes from that project's own
-     * workspace, exactly as the tool path does. Nothing here accepts a path.
+     * The operator picks a project, and for a project holding several checkouts
+     * also which one; the path comes from that project's own workspace, exactly as
+     * the tool path does. Nothing here accepts a path — `repositoryKey` is matched
+     * against repositories the workspace actually holds, so a caller cannot reach
+     * outside it.
      */
     const repositoryForProject = async (
       companyId: string,
       projectId: string | null,
+      repositoryKey?: string | null,
     ): Promise<string> => {
       const { config: scoped } = await loadConfig(ctx, companyId);
       const roots = containmentRoots(scoped, await repositoryRoot(ctx, companyId));
@@ -1166,10 +1189,20 @@ const plugin = definePlugin({
           "not_indexed",
         );
       }
+
+      const found = await findRepositories(resolved, { remoteUrl: workspace?.repoUrl });
+      const chosen = selectRepository(found, repositoryKey);
+      if (!chosen) {
+        throw new GraphUnavailable(
+          "That project has no such repository.",
+          "not_indexed",
+        );
+      }
+
       // The index sits at the repository root. For an ordinary checkout that is
-      // the workspace; when the project points into a monorepo it is an
-      // ancestor, and opening `<workspace>/.codegraph` would find no index at all.
-      const { root } = await repositoryIdentity(resolved);
+      // the checkout itself; when the project points into a monorepo it is an
+      // ancestor, and opening `<checkout>/.codegraph` would find no index at all.
+      const { root } = await repositoryIdentity(chosen.path);
       return root;
     };
 
@@ -1613,6 +1646,11 @@ const plugin = definePlugin({
      * an error object that rendered as `[object Object]`. Restored against the
      * current API — the caller sends a Paperclip `projectId` and the path is
      * resolved through the host, as everywhere else.
+     *
+     * A project can hold more than one repository, so the caller may also send the
+     * `repositoryKey` it was given when the list was drawn. Omitting it indexes the
+     * project's primary repository, which is the only repository a single-checkout
+     * project has.
      */
     ctx.actions.register(ACTION_KEYS.indexNow, async (params) => {
       const companyId = asString(params?.["companyId"]);
@@ -1621,11 +1659,12 @@ const plugin = definePlugin({
         throw new Error("companyId and projectId are required");
       }
       const reindex = params?.["reindex"] === true;
+      const repositoryKey = asString(params?.["repositoryKey"]);
 
       const { config: scoped, error } = await loadConfig(ctx, companyId);
       if (error) throw new Error(error);
 
-      const projectPath = await repositoryForProject(companyId, projectId);
+      const projectPath = await repositoryForProject(companyId, projectId, repositoryKey);
       const env = mcpEnv(scoped);
 
       const binary = await ensureBinary({
@@ -1661,12 +1700,25 @@ const plugin = definePlugin({
         ctx,
         { companyId, agentId: null, runId: null, paperclipProjectId: projectId },
         `CodeGraph index ${result.ok ? "completed" : "failed"} for "${alias}"`,
-        { projectId, reindex, ok: result.ok, detail: result.detail.slice(0, 300) },
+        {
+          projectId,
+          repositoryKey: repositoryKey ?? null,
+          reindex,
+          ok: result.ok,
+          detail: result.detail.slice(0, 300),
+        },
       );
 
       // A failed index is reported as a result rather than thrown: the caller
       // needs to show what CodeGraph said, and "the action threw" loses that.
-      return { ok: result.ok, projectId, alias, reindex, detail: result.detail };
+      return {
+        ok: result.ok,
+        projectId,
+        repositoryKey: repositoryKey ?? "",
+        alias,
+        reindex,
+        detail: result.detail,
+      };
     });
 
     /**
