@@ -1,5 +1,15 @@
 # paperclip-codegraph v0.12.5
 
+> **Corrected in [v0.12.6](./RELEASE-NOTES-0.12.6.md).** This release says CodeGraph's
+> index "lives at the checkout, so handing it the folder one level above answers nothing
+> at all". That is wrong for the case that mattered: CodeGraph searches **upward**, so a
+> project indexed at its container folder is answered for from its checkout, and the
+> agent path was not broken for `dealthai` at all. The descent introduced here did fix
+> multi-repository projects — nothing indexes the container of one — but applied
+> unconditionally it hid the container index and would have built a second one inside
+> the checkout. v0.12.6 makes the descent conditional on the folder not already
+> answering. The rest of this note stands.
+
 The agent side of the same defect v0.12.4 fixed on the settings page.
 
 ## The gap

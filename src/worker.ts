@@ -537,7 +537,7 @@ async function handleToolCall(
   // for a multi-repository project that folder holds several. CodeGraph reads one
   // index at one path, so the folder above it answers nothing, which reaches the
   // agent as "not indexed" on a repository that is indexed on the host.
-  const checkout = await resolveCheckout(projectPath);
+  const checkout = await resolveCheckout(projectPath, { hasIndex: isIndexed });
   if (!checkout.ok) {
     // Several checkouts and no way to tell which one was meant. Answering from an
     // arbitrary one would be a confident answer about the wrong codebase, so the call
@@ -1045,8 +1045,17 @@ const plugin = definePlugin({
             continue;
           }
 
+          // The workspace itself, not only the checkout: CodeGraph searches *upward*
+          // for `.codegraph` — verified against 1.6.0, which resolves
+          // `_default/.codegraph` for a query made from `_default/<repo>` — so a
+          // project indexed at the folder holding its checkout is indexed, and a row
+          // saying otherwise is the one lie this plugin's documentation calls out.
+          const workspaceIndexed = await isIndexed(resolved);
+
           for (const repository of found) {
             const { identity } = await repositoryIdentity(repository.path);
+            const indexed =
+              repository.path === resolved ? workspaceIndexed : await isIndexed(repository.path);
             rows.push({
               ...repositoryRow({
                 projectId: project.id,
@@ -1055,7 +1064,9 @@ const plugin = definePlugin({
                 repositoryName: identity.name,
                 folderName: path.basename(repository.path),
                 siblings: found.length,
-                indexed: await isIndexed(repository.path),
+                // Either the checkout has its own index or the folder holding it
+                // does; both answer for this repository.
+                indexed: indexed || workspaceIndexed,
                 // The primary control: whether this org may read this repository
                 // at all. Absent means yes — access is derived, and this only
                 // narrows. It is a per-project flag, which is why the settings
@@ -1233,6 +1244,16 @@ const plugin = definePlugin({
       // the checkout itself; when the project points into a monorepo it is an
       // ancestor, and opening `<checkout>/.codegraph` would find no index at all.
       const { root } = await repositoryIdentity(chosen.path);
+
+      // Where to *build* an index, which is not always where the code is. CodeGraph
+      // searches upward, so a project whose index was built at the folder holding its
+      // checkout — a real one here is — is already answered for. Building at the
+      // checkout would create a second index of the same code and change which one
+      // answers, so a folder that already has an index keeps it.
+      if (root !== resolved && !(await isIndexed(root)) && (await isIndexed(resolved))) {
+        return resolved;
+      }
+
       return root;
     };
 
@@ -1426,6 +1447,7 @@ const plugin = definePlugin({
         resolveProjectPath(resolved.project.path, {
           allowedProjectRoots: scopedConfig.allowedProjectRoots,
         }),
+        { hasIndex: isIndexed },
       );
       if (!checkout.ok) {
         return {

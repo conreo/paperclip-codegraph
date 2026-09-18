@@ -35,7 +35,7 @@ export const GOVERNANCE_DOC_VERSION = 1;
 export const CODEGRAPH_FOLDER_KEY = "codegraph-repositories";
 
 /** Manifest version; keep in sync with package.json. */
-export const PLUGIN_VERSION = "0.12.5";
+export const PLUGIN_VERSION = "0.12.6";
 
 /**
  * `projectPath` is deliberately absent from every schema this plugin declares.

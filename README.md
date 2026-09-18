@@ -448,12 +448,19 @@ never an absolute path, so it is safe to render and safe to send back.
 **When an agent calls a tool**, there is no key to send: the call is about the project
 the run is working in. So the resolution is:
 
-| The project folder holds | What the call reads |
+| The project folder | What the call reads |
 |---|---|
-| the checkout itself | it, unchanged — every existing deployment behaves identically |
-| exactly one checkout | that checkout — unambiguous, and plainly what was meant |
-| several checkouts | **nothing.** The call is refused, and the repository names are returned |
-| no checkout | the folder, unchanged — it may be a package inside a monorepo whose index sits at an ancestor |
+| **already has an index** (`.codegraph`) | the folder, unchanged — a working deployment, not a mistake |
+| is the checkout itself | it, unchanged — every existing deployment behaves identically |
+| holds exactly one checkout | that checkout — unambiguous, and plainly what was meant |
+| holds several checkouts | **nothing.** The call is refused, and the repository names are returned |
+| holds no checkout | the folder, unchanged — it may be a package inside a monorepo whose index sits at an ancestor |
+
+The first row is not a technicality. CodeGraph searches **upward** for `.codegraph`,
+so a project indexed at its container folder is answered for from its checkout today;
+descending past that index would hide a working setup, and `autoIndex` would then build
+a **second** index of the same code inside the checkout — and change which index
+answers. An index that already exists wins.
 
 The refusal is the deliberate part. Nothing in a multi-repository project says which
 repository a question was about, and a tool that quietly reads `acme-api` when the

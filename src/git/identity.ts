@@ -269,9 +269,8 @@ export async function findRepositories(
  * The *agent* side of the same problem `findRepositories` solves for the settings
  * page. A governance binding, or the workspace Paperclip hands a run, can name a
  * folder that **contains** the checkout rather than being one — Paperclip's managed
- * layout is `<project>/_default/<repo>/` — and CodeGraph's index lives at the
- * checkout, so handing it the folder one level above answers nothing at all. An
- * agent then gets "not indexed" for a repository that is indexed on the host.
+ * layout is `<project>/_default/<repo>/` — so handing CodeGraph the folder one level
+ * above the checkout can miss the index that was built inside it.
  *
  * - **No candidate** — the path is kept as it is. It may be a subdirectory of a
  *   checkout whose index sits at an ancestor, which is CodeGraph's own business to
@@ -285,16 +284,38 @@ export async function findRepositories(
  * The refusal carries `relativePath`s — the same directory names the settings page
  * shows — so the message an agent gets names something the operator can act on,
  * without disclosing where the host keeps it.
+ *
+ * ## `hasIndex` — why the descent is conditional
+ *
+ * A folder that already answers can be a *working* deployment, not a mistake. A real
+ * project here was indexed at its container folder (`_default/.codegraph`), and
+ * CodeGraph searches *upward* from whatever path it is given, so its checkout answers
+ * from that index today. Descending anyway would be actively harmful: `ensureIndex`
+ * checks for an index at the path it is handed, would not find one, and `autoIndex`
+ * would build a **second** index inside the checkout — a duplicate of the same code,
+ * and a change in which index answers.
+ *
+ * So when the caller can answer "would CodeGraph find an index here", a yes keeps the
+ * path. The check is injected rather than imported because it is the one thing this
+ * module cannot know: it reads the filesystem, and the CodeGraph index is
+ * `codegraph/manage.ts`'s business.
  */
 export type CheckoutResolution =
   | { ok: true; path: string; contained: boolean }
   | { ok: false; candidates: string[] };
 
-export async function resolveCheckout(configuredPath: string): Promise<CheckoutResolution> {
+export async function resolveCheckout(
+  configuredPath: string,
+  options: { hasIndex?: (candidate: string) => Promise<boolean> } = {},
+): Promise<CheckoutResolution> {
+  if (options.hasIndex && (await options.hasIndex(configuredPath))) {
+    return { ok: true, path: configuredPath, contained: false };
+  }
+
   const found = await findRepositories(configuredPath);
 
   // The path is a checkout itself, which is the ordinary case: returning it
-  // unchanged is what keeps every existing deployment byte-identical.
+  // unchanged is what keeps every existing deployment identical.
   if (found.length === 0 || (found.length === 1 && found[0]!.relativePath === "")) {
     return { ok: true, path: configuredPath, contained: false };
   }

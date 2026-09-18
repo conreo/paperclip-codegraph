@@ -462,4 +462,42 @@ describe("resolveCheckout — which checkout a configured path means", () => {
     fs.mkdirSync(path.join(root, "vendor", "sub", ".git"), { recursive: true });
     expect(await resolveCheckout(root)).toEqual({ ok: true, path: root, contained: false });
   });
+
+  it("keeps a folder that already answers, index and all", async () => {
+    // The DEA shape, which is real: the index was built at the *container* folder and
+    // CodeGraph searches upward from the checkout, so the checkout answers from it
+    // today. Descending would not find that index, and `autoIndex` would then build a
+    // second one inside the checkout — a duplicate of the same code that also changes
+    // which index answers.
+    fs.mkdirSync(path.join(root, "_default", "dealthai", ".git"), { recursive: true });
+    const resolved = await resolveCheckout(path.join(root, "_default"), {
+      hasIndex: async (candidate) => candidate === path.join(root, "_default"),
+    });
+    expect(resolved).toEqual({ ok: true, path: path.join(root, "_default"), contained: false });
+  });
+
+  it("descends when the folder does not answer — the same shape, no index", async () => {
+    // The identical directory with no index at the container: nothing there answers,
+    // so the single checkout is where the answer has to come from. These two tests
+    // differ only in `hasIndex`, which is the whole rule.
+    fs.mkdirSync(path.join(root, "_default", "dealthai", ".git"), { recursive: true });
+    const resolved = await resolveCheckout(path.join(root, "_default"), {
+      hasIndex: async () => false,
+    });
+    expect(resolved).toEqual({
+      ok: true,
+      path: path.join(root, "_default", "dealthai"),
+      contained: true,
+    });
+  });
+
+  it("does not consult the index at all when no checker is given", async () => {
+    // The default stays purely structural, so a caller that cannot answer the index
+    // question gets the discovery answer rather than a guess.
+    fs.mkdirSync(path.join(root, "_default", "dealthai", ".git"), { recursive: true });
+    const resolved = await resolveCheckout(path.join(root, "_default"));
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error("unreachable");
+    expect(resolved.contained).toBe(true);
+  });
 });

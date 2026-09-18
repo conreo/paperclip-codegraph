@@ -220,6 +220,53 @@ describe("graph-projects — discovering the repositories a project holds", () =
     expect(repositories[0]!["repositoryKey"]).toBe("");
   });
 
+  it("reports a checkout as indexed when the folder holding it has the index", async () => {
+    // Real case: `dealthai` 1.6.0 index lives at `_default/.codegraph`, not inside the
+    // checkout, and CodeGraph resolves it upward from the checkout. Reporting the row
+    // as "not indexed" would send the operator to press Index now on a repository that
+    // is indexed — and `autoIndex` would then build a second index inside it.
+    await checkout(path.join("_default", "dealthai"));
+    fs.mkdirSync(path.join(root, "_default", ".codegraph"), { recursive: true });
+    fs.writeFileSync(path.join(root, "_default", ".codegraph", "codegraph.db"), "");
+
+    const { handle } = await graphProjectsFor(
+      [
+        {
+          id: "p-dea",
+          name: "Dealthai",
+          workspace: { path: path.join(root, "_default"), repoUrl: null },
+        },
+      ],
+      [root],
+    );
+
+    const repositories = (await handle({ companyId: COMPANY }))["repositories"] as Array<
+      Record<string, unknown>
+    >;
+    expect(repositories).toHaveLength(1);
+    expect(repositories[0]!["indexed"]).toBe(true);
+  });
+
+  it("still reports not-indexed when neither the checkout nor its folder has one", async () => {
+    await checkout(path.join("_default", "dealthai"));
+
+    const { handle } = await graphProjectsFor(
+      [
+        {
+          id: "p-dea",
+          name: "Dealthai",
+          workspace: { path: path.join(root, "_default"), repoUrl: null },
+        },
+      ],
+      [root],
+    );
+
+    const repositories = (await handle({ companyId: COMPANY }))["repositories"] as Array<
+      Record<string, unknown>
+    >;
+    expect(repositories[0]!["indexed"]).toBe(false);
+  });
+
   it("still refuses to list a project with no code at all", async () => {
     // A backlog idea is not a repository, and a row for it would offer a button that
     // can only fail.

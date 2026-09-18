@@ -164,6 +164,24 @@ describe("a CodeGraph call in a project that holds several repositories", () => 
     expect(result.error).not.toContain("bind one of them");
   });
 
+  it("does not refuse when the folder itself already answers", async () => {
+    // A container with an index at it is a working deployment, not a mistake:
+    // CodeGraph searches upward from the checkout and finds that index today. So the
+    // index wins over the descent, the call proceeds, and — because no CodeGraph
+    // binary is configured here — it fails on *that*, not on ambiguity. Descending
+    // would instead have built a second index inside one of the checkouts.
+    mkRepo("vroomy-backend");
+    mkRepo("vroomy-frontend");
+    fs.mkdirSync(path.join(root, "_default", ".codegraph"), { recursive: true });
+    fs.writeFileSync(path.join(root, "_default", ".codegraph", "codegraph.db"), "");
+
+    const { call } = await bindContainer(path.join(root, "_default"), [root]);
+    const result = await call({ query: "anything" }, runCtx);
+
+    expect(result.error).not.toContain("bind one of them");
+    expect(result.error).not.toContain("repositories");
+  });
+
   it("refuses a binding outside the allowed roots, before looking at checkouts", async () => {
     // Containment is validated first and the ambiguity check cannot weaken it: a
     // binding outside `allowedProjectRoots` is refused whether or not it happens to
