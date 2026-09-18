@@ -1,6 +1,6 @@
 # paperclip-codegraph v0.12.5
 
-> **Corrected in [v0.12.6](./RELEASE-NOTES-0.12.6.md).** This release says CodeGraph's
+> **Corrected in [v0.12.6](https://github.com/conreo/paperclip-codegraph/releases/tag/v0.12.6).** This release says CodeGraph's
 > index "lives at the checkout, so handing it the folder one level above answers nothing
 > at all". That is wrong for the case that mattered: CodeGraph searches **upward**, so a
 > project indexed at its container folder is answered for from its checkout, and the
