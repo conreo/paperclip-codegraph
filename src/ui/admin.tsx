@@ -769,13 +769,15 @@ function Repositories({
                     ) : null}
                   </span>
                   <span style={styles.rowMeta}>
-                    {indexed === 0
-                      ? "Not indexed"
-                      : project.length === 1
-                        ? first.fileCount === null || first.fileCount === undefined
+                    {project.length === 1
+                      ? indexed === 0
+                        ? "Not indexed"
+                        : first.fileCount === null || first.fileCount === undefined
                           ? "Indexed"
                           : `Indexed · ${first.fileCount} files, ${first.nodeCount ?? "?"} symbols`
-                        : `${indexed} of ${project.length} repositories indexed`}
+                      : // The denominator is the useful fact for a project holding
+                        // several: "not indexed" hides how many there are to do.
+                        `${indexed} of ${project.length} repositories indexed`}
                   </span>
                   {/*
                     Only when there is something to disambiguate. A single

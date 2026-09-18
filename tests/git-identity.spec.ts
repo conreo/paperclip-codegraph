@@ -8,6 +8,7 @@ import {
   gitIdentity,
   indexRoot,
   findRepositories,
+  resolveCheckout,
   isGitRepository,
   redactRemoteUrl,
   repoNameFromRemoteUrl,
@@ -382,5 +383,83 @@ describe("findRepositories — discovering checkouts inside a workspace", () => 
     mkRepo("app");
     const found = await findRepositories(root, { remoteUrl: "https://example.com/group/app.git" });
     expect(found.map((r) => r.relativePath)).toEqual(["app"]);
+  });
+});
+
+describe("resolveCheckout — which checkout a configured path means", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "pcg-checkout-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const mkRepo = (dir: string) => {
+    fs.mkdirSync(path.join(root, dir), { recursive: true });
+    fs.mkdirSync(path.join(root, dir, ".git"));
+  };
+
+  it("returns a checkout unchanged", async () => {
+    // The property every existing deployment depends on: a binding that already
+    // names the checkout must resolve to exactly the same path it always did.
+    mkRepo(".");
+    const resolved = await resolveCheckout(root);
+    expect(resolved).toEqual({ ok: true, path: root, contained: false });
+  });
+
+  it("descends into a folder holding one checkout — the DEA case", async () => {
+    // The binding names `_default`; the index is at `_default/dealthai`. Handing
+    // CodeGraph the folder above it is why an agent got "not indexed" for a
+    // repository that was indexed on the host.
+    fs.mkdirSync(path.join(root, "_default", "dealthai"), { recursive: true });
+    fs.mkdirSync(path.join(root, "_default", "dealthai", ".git"));
+    const resolved = await resolveCheckout(path.join(root, "_default"));
+    expect(resolved).toEqual({
+      ok: true,
+      path: path.join(root, "_default", "dealthai"),
+      contained: true,
+    });
+  });
+
+  it("refuses a folder holding several, naming them", async () => {
+    // Nothing says which of the six was meant, and answering out of an arbitrary one
+    // would be a confident answer about the wrong codebase. The names are also the
+    // instruction: bind one of these.
+    for (const name of ["vroomy-frontend", "vroomy-backend", "vroomy-docs"]) {
+      mkRepo(name);
+    }
+    const resolved = await resolveCheckout(root);
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) throw new Error("unreachable");
+    // Ordered, so the message is stable across calls.
+    expect(resolved.candidates).toEqual(["vroomy-backend", "vroomy-docs", "vroomy-frontend"]);
+  });
+
+  it("leaves a path with no checkout alone", async () => {
+    // It may be a subdirectory of a checkout whose index sits at an ancestor, which
+    // is CodeGraph's own business to resolve. Refusing here would break a working
+    // monorepo deployment, and rewriting the path would move it somewhere nobody
+    // bound.
+    fs.mkdirSync(path.join(root, "packages", "app"), { recursive: true });
+    const target = path.join(root, "packages", "app");
+    expect(await resolveCheckout(target)).toEqual({ ok: true, path: target, contained: false });
+  });
+
+  it("leaves a path that does not exist alone", async () => {
+    // Not this function's job to report: `resolveProjectPath` has already validated
+    // containment, and a missing folder is reported by the call that needs it.
+    const target = path.join(root, "gone");
+    expect(await resolveCheckout(target)).toEqual({ ok: true, path: target, contained: false });
+  });
+
+  it("does not treat a nested checkout inside a checkout as a second candidate", async () => {
+    // A submodule is the outer repository's business: the workspace *is* a checkout,
+    // so what it contains is not a competing answer.
+    mkRepo(".");
+    fs.mkdirSync(path.join(root, "vendor", "sub", ".git"), { recursive: true });
+    expect(await resolveCheckout(root)).toEqual({ ok: true, path: root, contained: false });
   });
 });

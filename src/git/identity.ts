@@ -262,3 +262,46 @@ export async function findRepositories(
 
   return found;
 }
+
+/**
+ * Which checkout a configured path actually means.
+ *
+ * The *agent* side of the same problem `findRepositories` solves for the settings
+ * page. A governance binding, or the workspace Paperclip hands a run, can name a
+ * folder that **contains** the checkout rather than being one — Paperclip's managed
+ * layout is `<project>/_default/<repo>/` — and CodeGraph's index lives at the
+ * checkout, so handing it the folder one level above answers nothing at all. An
+ * agent then gets "not indexed" for a repository that is indexed on the host.
+ *
+ * - **No candidate** — the path is kept as it is. It may be a subdirectory of a
+ *   checkout whose index sits at an ancestor, which is CodeGraph's own business to
+ *   resolve; refusing here would break a working monorepo deployment.
+ * - **One candidate** — it is used. Unambiguous, and plainly what the operator
+ *   meant by naming the folder that holds it.
+ * - **Several** — refused, with the names returned. Choosing one would let an agent
+ *   answer confidently out of a codebase nobody selected, and nothing in the answer
+ *   would say so. Naming them is also the instruction: bind the one you want.
+ *
+ * The refusal carries `relativePath`s — the same directory names the settings page
+ * shows — so the message an agent gets names something the operator can act on,
+ * without disclosing where the host keeps it.
+ */
+export type CheckoutResolution =
+  | { ok: true; path: string; contained: boolean }
+  | { ok: false; candidates: string[] };
+
+export async function resolveCheckout(configuredPath: string): Promise<CheckoutResolution> {
+  const found = await findRepositories(configuredPath);
+
+  // The path is a checkout itself, which is the ordinary case: returning it
+  // unchanged is what keeps every existing deployment byte-identical.
+  if (found.length === 0 || (found.length === 1 && found[0]!.relativePath === "")) {
+    return { ok: true, path: configuredPath, contained: false };
+  }
+
+  if (found.length === 1) {
+    return { ok: true, path: found[0]!.path, contained: true };
+  }
+
+  return { ok: false, candidates: found.map((repository) => repository.relativePath) };
+}

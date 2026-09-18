@@ -113,6 +113,7 @@ import {
   NO_GIT_IDENTITY,
   findRepositories,
   indexRoot,
+  resolveCheckout,
   type CommandRunner,
   type GitIdentity,
 } from "./git/identity.js";
@@ -530,6 +531,32 @@ async function handleToolCall(
     });
     return { error: detail };
   }
+
+  // The binding may name the folder that *holds* the checkout rather than the
+  // checkout itself — Paperclip's managed layout is `<project>/_default/<repo>/`, and
+  // for a multi-repository project that folder holds several. CodeGraph reads one
+  // index at one path, so the folder above it answers nothing, which reaches the
+  // agent as "not indexed" on a repository that is indexed on the host.
+  const checkout = await resolveCheckout(projectPath);
+  if (!checkout.ok) {
+    // Several checkouts and no way to tell which one was meant. Answering from an
+    // arbitrary one would be a confident answer about the wrong codebase, so the call
+    // is refused and the candidates named — which is also what has to be bound.
+    await audit(ctx, auditCtx, `${spec.name} denied: ambiguous repository`, {
+      tool: spec.name,
+      decision: "deny",
+      reason: "ambiguous_repository",
+      projectKey: binding.projectKey,
+      candidates: checkout.candidates.length,
+    });
+    return {
+      error:
+        `CodeGraph project "${binding.projectKey}" holds ${checkout.candidates.length} repositories ` +
+        `(${checkout.candidates.join(", ")}), so no repository is selected. ` +
+        `Ask a Paperclip admin to bind one of them in the CodeGraph governance profile for your company.`,
+    };
+  }
+  projectPath = checkout.path;
 
   const env = mcpEnv(config);
 
@@ -1081,9 +1108,9 @@ const plugin = definePlugin({
         // caller sends back.
         delete entry["path"];
 
-        // The index lives at the repository root, which is the checkout itself
-        // for an ordinary project. `alias` is kept for callers that want a
-        // one-word label and must not disclose host layout.
+        // `alias` is kept for callers that want a one-word label. It prefers the
+        // repository's own name because the folder is an accident of how Paperclip
+        // checked the code out.
         entry["alias"] = row.repoName ?? path.basename(row.path);
 
         if (entry["indexed"] && binary.ok) {
@@ -1105,12 +1132,15 @@ const plugin = definePlugin({
     });
 
     /**
-     * The repositories the graph view can draw, cheapest possible check.
+     * The repositories this org has, cheapest possible check.
      *
-     * Distinct from `repositories` above, which runs `codegraph status` per
-     * indexed repository to report file and node counts. That is right for a
-     * status page and wrong for a selector: it spawns a process per project on
-     * every load. This one only asks whether the index file exists.
+     * What the settings page's Repositories section and the nav column both read,
+     * so they can never disagree about whether an organisation has a repository.
+     *
+     * Distinct from `repositories` above, which runs `codegraph status` per indexed
+     * repository to report file and node counts. That is right for a status page and
+     * wrong for a list that is drawn on every navigation: it spawns a process per
+     * indexed repository. This one only asks whether the index file exists.
      */
     ctx.data.register(DATA_KEYS.graphProjects, async (params) => {
       const companyId = asString(params?.["companyId"]);
@@ -1390,9 +1420,24 @@ const plugin = definePlugin({
         };
       }
 
-      const projectPath = resolveProjectPath(resolved.project.path, {
-        allowedProjectRoots: scopedConfig.allowedProjectRoots,
-      });
+      // The same resolution the tool path performs, so this reports what an agent's
+      // call would actually do rather than a path the call would have replaced.
+      const checkout = await resolveCheckout(
+        resolveProjectPath(resolved.project.path, {
+          allowedProjectRoots: scopedConfig.allowedProjectRoots,
+        }),
+      );
+      if (!checkout.ok) {
+        return {
+          ok: false,
+          enabled: scopedConfig.enabled,
+          allowed: true,
+          projectKey: resolved.project.projectKey,
+          reason: "ambiguous_repository",
+          candidates: checkout.candidates,
+        };
+      }
+      const projectPath = checkout.path;
       const env = mcpEnv(scopedConfig);
 
       const binary = await ensureBinary({

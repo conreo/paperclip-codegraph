@@ -29,6 +29,7 @@ Company B ──┘                          └── repo B  (.codegraph index
 - [Tools exposed](#tools-exposed)
 - [Where it appears in Paperclip](#where-it-appears-in-paperclip)
 - [Why `projectPath` is not exposed](#why-projectpath-is-not-exposed)
+- [One project, several repositories](#one-project-several-repositories)
 - [Choosing between the two integration paths](#choosing-between-the-two-integration-paths)
 - [Verifying an install](#verifying-an-install)
 - [Bringing it up on a real instance](./docs/RUNBOOK.md)
@@ -380,7 +381,11 @@ What the plugin is for is the part Paperclip needs:
   `_default/<repo>` shape), or several side by side. Each becomes its own row, with
   its own index and its own "Index now", identified by its path relative to the
   workspace (`""` is the workspace itself). Nothing is guessed beyond one level down,
-  so a vendored checkout inside `node_modules` is never indexed by accident.
+  so a vendored checkout inside `node_modules` is never indexed by accident. The same
+  resolution applies to an **agent's** call: a project folder holding exactly one
+  checkout is descended into, and one holding several is refused rather than answered
+  out of an arbitrary member — see [One project, several
+  repositories](#one-project-several-repositories).
 
 To **read** the graph, run `codegraph ui` on the host. It is a local, read-only
 viewer for the project you already indexed, and it needs no Paperclip wiring:
@@ -417,6 +422,53 @@ This plugin therefore:
 The argument-stripping behaviour is asserted directly in
 `tests/arguments.spec.ts`, and the override at the wire level in
 `tests/mcp-client.spec.ts`.
+
+## One project, several repositories
+
+Paperclip's managed layout is a *container*, not a checkout:
+
+```
+<company>/<project>/_default/            ← the project workspace, not a repository
+├── acme-web/          .git
+├── acme-api/          .git
+└── acme-infra/        .git
+```
+
+A single-repository project puts one checkout in there. A multi-repository project
+puts several, side by side, and the workspace itself carries no `.git` and no
+`repo_url`.
+
+**On the settings page**, each checkout is its own row, with its own index state and
+its own *Index now*. Rows are grouped under their project, because the on/off switch
+is a per-project decision: the project is what an agent works in, and switching it off
+narrows every checkout at once. A row is identified by `repositoryKey` — its path
+relative to the workspace, `""` for the workspace itself. That is a directory name,
+never an absolute path, so it is safe to render and safe to send back.
+
+**When an agent calls a tool**, there is no key to send: the call is about the project
+the run is working in. So the resolution is:
+
+| The project folder holds | What the call reads |
+|---|---|
+| the checkout itself | it, unchanged — every existing deployment behaves identically |
+| exactly one checkout | that checkout — unambiguous, and plainly what was meant |
+| several checkouts | **nothing.** The call is refused, and the repository names are returned |
+| no checkout | the folder, unchanged — it may be a package inside a monorepo whose index sits at an ancestor |
+
+The refusal is the deliberate part. Nothing in a multi-repository project says which
+repository a question was about, and a tool that quietly reads `acme-api` when the
+question was about `acme-web` produces a confident, well-sourced, wrong answer — the
+worst possible failure for code intelligence. Binding one repository is an explicit
+act, so it has to be an explicit act:
+
+```jsonc
+// governance: point the project at the checkout, not at the container
+{ "projects": { "acme-web": { "projectKey": "acme-web",
+                              "path": "/srv/paperclip/<company>/<project>/_default/acme-web" } } }
+```
+
+The refusal names the candidates so the operator knows what to bind, and it is
+recorded in the audit row as `ambiguous_repository`.
 
 ## Choosing between the two integration paths
 
